@@ -1,6 +1,6 @@
 repository: "jebel-quant/rhiza"
 ref: "main"
-template-host: gitlab
+template-host: github
 
 profiles:
   - gitlab-project
