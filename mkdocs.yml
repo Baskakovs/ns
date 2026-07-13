@@ -1,0 +1,16 @@
+INHERIT: docs/mkdocs-base.yml
+
+site_name: novetly-score
+site_description: Add your description here.
+site_url: https://yukka-lab.gitlab.io/novetly-score/
+repo_url: https://gitlab.com/yukka-lab/novetly-score
+repo_name: yukka-lab/novetly-score
+edit_uri: edit/main/
+
+docs_dir: docs
+
+nav:
+  - Home: index.md
+  - Reports:
+      - Test Report: reports/html-report/report.html
+      - Coverage Report: reports/html-coverage/index.html

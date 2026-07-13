@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling>=1.29"]
+build-backend = "hatchling.build"
+
+[project]
+name = "novetly-score"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "yukka-lab" }
+]
+keywords = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Developers",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/yukka-lab/novetly-score"
+Repository = "https://github.com/yukka-lab/novetly-score"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/novetly_score"]
+
+[dependency-groups]
+test = [
+    "pytest>=8.0.0",
+    "pytest-cov>=6.0.0",
+    "pytest-xdist>=3.0.0",
+]
+lint = [
+    "ruff>=0.11.0",
+]
+dev = []
