@@ -1,0 +1,6 @@
+INHERIT: docs/mkdocs-base.yml
+
+site_name: "ns"
+site_description: "A repository for determining how novel a news story is in relation to all the articles that came before it."
+repo_url: "https://github.com/Baskakovs/ns"
+repo_name: "Baskakovs/ns"

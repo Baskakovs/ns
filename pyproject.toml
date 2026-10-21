@@ -1,0 +1,40 @@
+[project]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+name = "ns"
+version = "0.1.0"
+description = "A repository for determining how novel a news story is in relation to all the articles that came before it."
+readme = "README.md"
+authors = [
+    { name = "Baskakovs", email = "baskakovs@me.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.9.26,<0.10.0"]
+build-backend = "uv_build"
+
+[project.urls]
+Homepage = "https://github.com/Baskakovs/ns"
+Repository = "https://github.com/Baskakovs/ns"
+
+[dependency-groups]
+test = ["pytest>=8.0", "pytest-cov>=5.0"]
+
+[tool.bumpversion]
+current_version = "0.1.0"
+tag = false
+commit = false
+allow_dirty = false
+
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+regex = true
+search = '(?ms)^\[project\]((?:(?!^\[)[\s\S])*?)^version = "{current_version}"'
+replace = '[project]\1version = "{new_version}"'
