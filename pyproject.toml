@@ -24,17 +24,27 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Intended Audience :: Developers",
 ]
-dependencies = []
+dependencies = [
+    "boto3>=1.35",
+    # botocore is imported directly (Config, exceptions), not only via boto3.
+    "botocore>=1.35",
+    "python-dotenv>=1.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/yukka-lab/novetly-score"
 Repository = "https://github.com/yukka-lab/novetly-score"
+
+# deptry cannot infer this module name from the distribution name.
+[tool.deptry.package_module_name_map]
+python-dotenv = "dotenv"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/novetly_score"]
 
 [dependency-groups]
 test = [
+    "moto[s3,server]>=5.0.0",
     "pytest>=8.0.0",
     "pytest-cov>=6.0.0",
     "pytest-xdist>=3.0.0",
@@ -42,4 +52,9 @@ test = [
 lint = [
     "ruff>=0.11.0",
 ]
-dev = []
+# Type stubs only: boto3/botocore ship no py.typed marker, and data/s3.py annotates
+# the client it returns as mypy_boto3_s3.client.S3Client under TYPE_CHECKING.
+dev = [
+    "boto3-stubs[s3]>=1.35",
+    "botocore-stubs>=1.35",
+]
