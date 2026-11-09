@@ -14,16 +14,17 @@ from moto.server import ThreadedMotoServer
 
 from novetly_score.data.identify import (
     BACKUP_PREFIX,
-    ID_CHARS,
     ID_COLUMN,
+    ID_TYPE,
     MANIFEST_KEY,
     BackfillError,
+    add_ids,
     backfill,
     files,
-    identified,
     key_of,
     main,
     manifest,
+    restore,
     verify,
 )
 from novetly_score.data.s3 import ACCESS_KEY_VAR, ENDPOINT_VAR, SECRET_VAR
@@ -131,30 +132,68 @@ def read(s3, key, tmp_path):
 
 
 class TestOneIdPerRow:
-    """What the column holds once a file has been rewritten."""
+    """What the column holds once a file has been rewritten, checked on local files only."""
 
-    def test_it_puts_a_unique_id_on_every_row(self):
-        """One id per row, and no two the same."""
-        frame = identified(pl.DataFrame({"snippet": ["a", "b", "a"]}))
-        ids = frame.get_column(ID_COLUMN)
-        assert ids.n_unique() == 3, "identical text must still get distinct ids"
-        assert all(len(value) == ID_CHARS for value in ids)
+    @pytest.fixture
+    def con(self):
+        """A plain in-memory connection: adding ids touches no network."""
+        import duckdb
 
-    def test_the_id_comes_first(self):
+        with duckdb.connect() as connection:
+            yield connection
+
+    def written(self, con, tmp_path, frame):
+        """Run a frame through add_ids and read the result back with DuckDB."""
+        source, target = tmp_path / "in.parquet", tmp_path / "out.parquet"
+        frame.write_parquet(source)
+        rows = add_ids(con, source, target)
+        return rows, target
+
+    def test_it_puts_a_unique_id_on_every_row(self, con, tmp_path):
+        """One id per row, and no two the same — identical text included."""
+        rows, target = self.written(con, tmp_path, pl.DataFrame({"snippet": ["a", "b", "a"]}))
+        assert rows == 3
+        counted = con.sql(
+            "SELECT count(*), count(DISTINCT snippet_id) FROM read_parquet($p)", params={"p": str(target)}
+        ).fetchall()[0]
+        assert counted == (3, 3)
+
+    def test_the_id_is_a_native_uuid(self, con, tmp_path):
+        """The point of the type: a UUID column cannot hold a malformed value at all."""
+        _rows, target = self.written(con, tmp_path, pl.DataFrame({"snippet": ["a"]}))
+        kind = con.sql(
+            "SELECT logical_type FROM parquet_schema($p) WHERE name = $c",
+            params={"p": str(target), "c": ID_COLUMN},
+        ).fetchall()
+        assert kind == [(ID_TYPE,)]
+
+    def test_polars_can_recover_the_id(self, con, tmp_path):
+        """The 16 bytes polars sees must convert back to the id DuckDB wrote, faithfully."""
+        import uuid
+
+        _rows, target = self.written(con, tmp_path, pl.DataFrame({"snippet": ["a"]}))
+        raw = pl.read_parquet(target).get_column(ID_COLUMN).item()
+        assert isinstance(raw, bytes)
+        (want,) = con.sql("SELECT snippet_id::VARCHAR FROM read_parquet($p)", params={"p": str(target)}).fetchall()[0]
+        assert str(uuid.UUID(bytes=raw)) == want
+
+    def test_the_id_comes_first(self, con, tmp_path):
         """The key reads better at the front, and a reader may select by position."""
-        frame = identified(pl.DataFrame({"entity": ["x"], "snippet": ["a"]}))
-        assert frame.columns == [ID_COLUMN, "entity", "snippet"]
+        _rows, target = self.written(con, tmp_path, pl.DataFrame({"entity": ["x"], "snippet": ["a"]}))
+        assert pl.read_parquet(target).columns == [ID_COLUMN, "entity", "snippet"]
 
-    def test_the_rows_keep_their_order(self):
+    def test_the_rows_keep_their_order(self, con, tmp_path):
         """The manifest records these files as sorted, so a reader may rely on it."""
-        frame = identified(pl.DataFrame({"snippet": ["first", "second", "third"]}))
-        assert frame.get_column("snippet").to_list() == ["first", "second", "third"]
+        size = 500_000  # large enough that a parallel scan would show up as a reordering
+        frame = pl.DataFrame({"seq": list(range(size))})
+        _rows, target = self.written(con, tmp_path, frame)
+        assert pl.read_parquet(target).get_column("seq").to_list() == list(range(size))
 
-    def test_an_empty_file_gets_the_column(self):
+    def test_an_empty_file_gets_the_column(self, con, tmp_path):
         """A file with no rows still needs the column, or a corpus-wide select fails on it."""
-        frame = identified(pl.DataFrame({"snippet": []}, schema={"snippet": pl.String}))
-        assert frame.columns == [ID_COLUMN, "snippet"]
-        assert frame.is_empty()
+        rows, target = self.written(con, tmp_path, pl.DataFrame({"snippet": []}, schema={"snippet": pl.String}))
+        assert rows == 0
+        assert pl.read_parquet(target).columns == [ID_COLUMN, "snippet"]
 
 
 class TestTheBackfill:
@@ -259,6 +298,41 @@ class TestTheOriginalIsKept:
         assert ID_COLUMN not in kept.columns
 
 
+class TestRestore:
+    """How a backfill is undone, which is the only way to change how ids are made."""
+
+    def test_it_puts_the_original_back(self, corpus, tmp_path):
+        """And the restored file has no id column, so the backfill will key it afresh."""
+        backfill(bucket=BUCKET)
+        counts = restore(bucket=BUCKET)
+        assert counts["restored"] == len(CORPUS)
+        assert ID_COLUMN not in read(corpus, key_of("mig_one", "2025-01"), tmp_path).columns
+
+    def test_a_restored_file_is_keyed_again(self, corpus, tmp_path):
+        """Restore then backfill is the migration path when the id type changes."""
+        backfill(bucket=BUCKET)
+        before = read(corpus, key_of("mig_one", "2025-01"), tmp_path).get_column(ID_COLUMN).to_list()
+        restore(bucket=BUCKET)
+        backfill(bucket=BUCKET)
+        after = read(corpus, key_of("mig_one", "2025-01"), tmp_path).get_column(ID_COLUMN).to_list()
+        assert len(after) == len(before)
+        assert set(after).isdisjoint(before), "a re-key must produce new ids, not the old ones"
+
+    def test_a_dry_run_restores_nothing(self, corpus, tmp_path):
+        """Undoing a migration of 18,183 files deserves a rehearsal."""
+        backfill(bucket=BUCKET)
+        counts = restore(bucket=BUCKET, dry_run=True)
+        assert counts["restored"] == len(CORPUS)
+        assert ID_COLUMN in read(corpus, key_of("mig_one", "2025-01"), tmp_path).columns
+
+    def test_a_file_with_no_backup_is_reported(self, corpus):
+        """--no-backup leaves nothing to restore, and that has to be said rather than assumed."""
+        backfill(bucket=BUCKET, backup=False)
+        counts = restore(bucket=BUCKET)
+        assert counts["restored"] == 0
+        assert counts["missing"] == len(CORPUS)
+
+
 class TestVerify:
     """What counts as a sound corpus."""
 
@@ -283,25 +357,35 @@ class TestVerify:
             verify(bucket=BUCKET)
 
     def test_a_null_id_is_caught(self, corpus, tmp_path):
-        """A null id is a row that cannot be addressed at all."""
+        """A null id is a row that cannot be addressed at all.
+
+        Planted with DuckDB rather than polars so the column stays a UUID: a polars column of
+        nulls would be a string, and the type check would fire first and mask this one.
+        """
+        import duckdb
+
         backfill(bucket=BUCKET)
         key = key_of("mig_two", "2025-01")
-        frame = read(corpus, key, tmp_path).with_columns(pl.lit(None, dtype=pl.String).alias(ID_COLUMN))
-        local = tmp_path / "null.parquet"
-        frame.write_parquet(local)
-        corpus.upload_file(str(local), BUCKET, key)
+        source, target = tmp_path / "was.parquet", tmp_path / "null.parquet"
+        corpus.download_file(BUCKET, key, str(source))
+        with duckdb.connect() as con:
+            con.sql(
+                "SELECT NULL::UUID AS snippet_id, * EXCLUDE (snippet_id) FROM read_parquet($p)",
+                params={"p": str(source)},
+            ).write_parquet(str(target))
+        corpus.upload_file(str(target), BUCKET, key)
         with pytest.raises(BackfillError, match="without an id"):
             verify(bucket=BUCKET)
 
-    def test_a_malformed_id_is_caught(self, corpus, tmp_path):
-        """Something that is not a UUID is a key nothing else will recognise."""
+    def test_an_id_column_of_the_wrong_type_is_caught(self, corpus, tmp_path):
+        """DuckDB casts a string to a UUID silently when joining, so only the type shows it."""
         backfill(bucket=BUCKET)
         key = key_of("mig_two", "2025-01")
         frame = read(corpus, key, tmp_path).with_columns(pl.lit("not-a-uuid").alias(ID_COLUMN))
         local = tmp_path / "bad.parquet"
         frame.write_parquet(local)
         corpus.upload_file(str(local), BUCKET, key)
-        with pytest.raises(BackfillError, match="malformed"):
+        with pytest.raises(BackfillError, match="other than a"):
             verify(bucket=BUCKET)
 
 

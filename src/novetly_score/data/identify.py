@@ -3,12 +3,11 @@
     uv run python -m novetly_score.data.identify backfill --entities bmw --months 2025-01:2025-03
     uv run python -m novetly_score.data.identify verify
     uv run python -m novetly_score.data.identify manifest
+    uv run python -m novetly_score.data.identify restore --entities bmw      # undo a backfill
 
 The snippet files arrive without a key. The text is not one: 2.68 rows share a text in a
 440k-row sample, so a text addresses a *sentence*, not an occurrence of it. This writes a
-UUID4 per row, as the canonical 36-character string rather than DuckDB's 16-byte UUID, because
-the native form reaches polars as opaque bytes and a key you cannot read is a key you cannot
-debug. It costs 20.6 MB per million rows against 16.0, so about 3.7 GB over the whole corpus.
+UUID per row, about 2.9 GB over the whole corpus at 16 bytes each.
 
 **A random id is only as good as its first assignment.** It cannot be recomputed, so the file
 *is* the record of it: a second run over a file that already has ids would hand the same rows
@@ -16,8 +15,17 @@ new ones and orphan everything joined to the old. So a file that already carries
 is skipped, always, and no flag overrides that. Re-running is therefore safe and cheap, which is
 what makes the backfill resumable across 18,183 files.
 
-**The original is kept.** Each file is copied to ``Archive/snippets_pre_id/`` — server-side, so
-no bytes move through here — before the rewritten one is put over it. The rewrite itself is one
+**The id is parquet's own UUID type**, 16 bytes, which DuckDB reads back as a ``UUID`` and so
+cannot hold a malformed value at all — there is no well-formedness to check, only that the
+column really is one. Reading it through :mod:`novetly_score.data.snippets` gives readable text,
+because DuckDB converts a UUID on the way out through Arrow; a direct ``pl.read_parquet`` gives
+the 16 bytes instead, which ``uuid.UUID(bytes=value)`` turns back into an id. DuckDB does the
+writing because polars has no UUID dtype and would emit an untyped blob.
+
+**The original is kept, and ``restore`` puts it back.** Each file is copied to
+``Archive/snippets_pre_id/`` — server-side, so no bytes move through here — before the rewritten
+one is put over it. Restoring is how to change the way ids are made after some files have them,
+since a file that has ids is never rewritten. The rewrite itself is one
 ``PutObject`` per file, so a reader sees the old file or the new one and never a torn one; a
 killed run leaves every file either done or untouched. Pass ``--no-backup`` once you trust it.
 
@@ -35,7 +43,6 @@ from __future__ import annotations
 import argparse
 import sys
 import tempfile
-import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -56,8 +63,10 @@ ID_COLUMN: Final = "snippet_id"
 #: Where an untouched original is kept before its file is replaced.
 BACKUP_PREFIX: Final = "Archive/snippets_pre_id"
 
-#: Characters of a canonical UUID, which is what a sound id has to be.
-ID_CHARS: Final = 36
+#: The parquet logical type a sound id column carries. DuckDB reads such a column back as its
+#: own ``UUID`` type, which is what makes the id well-formed by construction rather than by a
+#: length check — there is no way to put a non-UUID in it.
+ID_TYPE: Final = "UUIDType()"
 
 #: Where the file manifest lives within a bucket.
 MANIFEST_KEY: Final = "snippets_manifest/file_stats.parquet"
@@ -96,10 +105,21 @@ _SQL_ID_HEALTH: Final = """
     SELECT count(*) AS rows,
            count(*) FILTER (snippet_id IS NOT NULL) AS with_id,
            count(DISTINCT snippet_id) AS ids,
-           count(*) FILTER (snippet_id IS NULL) AS null_ids,
-           count(*) FILTER (snippet_id IS NOT NULL AND length(snippet_id) <> $width) AS malformed
+           count(*) FILTER (snippet_id IS NULL) AS null_ids
     FROM read_parquet($paths, union_by_name=true)
 """
+
+# A file whose id column is a string or a blob rather than a UUID would still join, since
+# DuckDB casts across them, and would be invisible to every row-level check. The logical type
+# is the only place that drift shows.
+_SQL_ID_TYPE: Final = """
+    SELECT count(*) FILTER (logical_type <> $expected) AS wrong_type, count(*) AS files
+    FROM parquet_schema($paths) WHERE name = $column
+"""
+
+_SQL_ADD_IDS: Final = "SELECT uuid() AS snippet_id, * FROM read_parquet($source)"
+
+_SQL_COUNT: Final = "SELECT count(*) FROM read_parquet($path)"
 
 _SQL_REBUILD_MANIFEST: Final = """
     SELECT regexp_extract(filename, '{prefix}/([^/]+)/', 1) AS entity,
@@ -165,17 +185,29 @@ def files(
     return [(entity, month, count) for entity, month, count in rows]
 
 
-def identified(frame: pl.DataFrame) -> pl.DataFrame:
-    """Put a fresh id on every row, as the first column, leaving the order alone.
+def add_ids(con: DuckDBPyConnection, source: Path, target: Path) -> int:
+    """Write *source* to *target* with a UUID column in front, row order intact.
+
+    DuckDB does the writing, not polars, because only it emits parquet's ``UUID`` logical type
+    — polars has no UUID dtype and would write 16 opaque bytes that come back as a ``BLOB``.
+    The relation's own ``write_parquet`` takes the path as an argument, so no file path is ever
+    formatted into SQL.
+
+    Row order survives: ``preserve_insertion_order`` is on by default, and this is checked over
+    500,000 rows by a test, because the manifest records these files as sorted and a reader may
+    rely on it.
 
     Args:
-        frame: One snippet file's rows.
+        con: An open connection.
+        source: The parquet to read.
+        target: The parquet to write.
 
     Returns:
-        The same rows, with :data:`ID_COLUMN` first.
+        The rows written.
     """
-    ids = [str(uuid.uuid4()) for _ in range(frame.height)]
-    return frame.with_columns(pl.Series(ID_COLUMN, ids, dtype=pl.String)).select(ID_COLUMN, *frame.columns)
+    relation = con.sql(_SQL_ADD_IDS, params={"source": str(source)})
+    relation.write_parquet(str(target), compression="zstd")
+    return con.sql(_SQL_COUNT, params={"path": str(target)}).fetchall()[0][0]
 
 
 def backfill(
@@ -213,7 +245,7 @@ def backfill(
                 counts["rewritten"] += 1
                 counts["rows"] += expected
                 continue
-            written, rows = _rewrite(s3, bucket, key, backup=backup)
+            written, rows = _rewrite(con, s3, bucket, key, backup=backup)
             counts["rewritten"] += 1
             counts["rows"] += rows
             counts["bytes"] += written
@@ -260,10 +292,18 @@ def _has_id(con: DuckDBPyConnection, bucket: str, key: str) -> bool:
     return any(name == ID_COLUMN for (name,) in columns)
 
 
-def _rewrite(s3, bucket: str, key: str, *, backup: bool) -> tuple[int, int]:  # noqa: ANN001 — boto3 client
+def _rewrite(
+    con: DuckDBPyConnection,
+    s3,  # noqa: ANN001 — a boto3 client; see OpenClient
+    bucket: str,
+    key: str,
+    *,
+    backup: bool,
+) -> tuple[int, int]:
     """Rewrite one file with ids, keeping the original first.
 
     Args:
+        con: An open connection, which does the writing.
         s3: An open S3 client.
         bucket: The bucket.
         key: The object key.
@@ -280,11 +320,10 @@ def _rewrite(s3, bucket: str, key: str, *, backup: bool) -> tuple[int, int]:  # 
         source = Path(directory) / "in.parquet"
         target = Path(directory) / "out.parquet"
         s3.download_file(bucket, key, str(source))
-        frame = identified(pl.read_parquet(source))
-        frame.write_parquet(target, compression="zstd")
+        rows = add_ids(con, source, target)
         size = target.stat().st_size
         s3.upload_file(str(target), bucket, key)
-    return size, frame.height
+    return size, rows
 
 
 def _exists(s3, bucket: str, key: str) -> bool:  # noqa: ANN001 — boto3 client
@@ -312,14 +351,18 @@ def verify(bucket: str = BUCKET) -> dict[str, int]:
 
     Uniqueness is checked over every file at once, not file by file: ids drawn independently
     per file are only useful if they do not collide between files, and that is the claim a
-    per-file check cannot make.
+    per-file check cannot make. There is no well-formedness check, because a UUID column cannot
+    hold anything but a UUID; what replaces it is a check that the column really is one, since
+    DuckDB casts a string or a blob to a UUID silently when joining and such a file would
+    otherwise pass every row-level test.
 
     Args:
         bucket: The bucket.
 
     Returns:
-        ``{"rows": …, "ids": …, "collisions": …, "null_ids": …, "malformed": …}``. A row in a
-        file that has not been backfilled counts under ``null_ids``.
+        ``{"rows": …, "ids": …, "collisions": …, "null_ids": …, "wrong_type": …}``. A row in a
+        file that has not been backfilled counts under ``null_ids``; ``wrong_type`` counts files
+        whose id column is a string or a blob rather than a UUID.
 
     Raises:
         BackfillError: If any row lacks a sound, unique id.
@@ -332,31 +375,86 @@ def verify(bucket: str = BUCKET) -> dict[str, int]:
         if ID_COLUMN not in columns:
             msg = f"no snippet file in s3://{bucket} carries {ID_COLUMN} — run the backfill"
             raise BackfillError(msg)
-        rows, with_id, ids, nulls, malformed = con.sql(
-            _SQL_ID_HEALTH, params={"paths": paths, "width": ID_CHARS}
+        wrong_type, _files = con.sql(
+            _SQL_ID_TYPE, params={"paths": paths, "expected": ID_TYPE, "column": ID_COLUMN}
         ).fetchall()[0]
+        if wrong_type:
+            # Stop here rather than counting rows: with a mixed id type the corpus cannot be
+            # read as one table at all, so there are no row counts to report.
+            msg = (
+                f"{wrong_type:,} file(s) hold {ID_COLUMN} as something other than a {ID_TYPE}. "
+                f"Restore them from {BACKUP_PREFIX} and run the backfill again"
+            )
+            raise BackfillError(msg)
+        rows, with_id, ids, nulls = con.sql(_SQL_ID_HEALTH, params={"paths": paths}).fetchall()[0]
     report = {
         "rows": rows,
         "ids": ids,
         "collisions": with_id - ids,
         "null_ids": nulls,
-        "malformed": malformed,
+        "wrong_type": wrong_type,
     }
     for name, value in report.items():
         print(f"  {name:<12} {value:,}", flush=True)
-    if report["collisions"] or nulls or malformed:
+    if report["collisions"] or nulls:
         cause = (
             "run the backfill — those rows are in files that have not been rewritten yet"
-            if nulls and not report["collisions"] and not malformed
+            if nulls and not report["collisions"] and not wrong_type
             else f"a file rewritten twice is the likely cause; the originals are under {BACKUP_PREFIX}"
         )
-        msg = (
-            f"unsound ids: {report['collisions']:,} collisions, {nulls:,} without an id, "
-            f"{malformed:,} malformed. {cause}"
-        )
+        msg = f"unsound ids: {report['collisions']:,} collisions, {nulls:,} without an id. {cause}"
         raise BackfillError(msg)
     print(f"sound: {rows:,} rows, {ids:,} distinct ids, one per row", flush=True)
     return report
+
+
+def restore(
+    names: Sequence[str] | None = None,
+    first: str | None = None,
+    last: str | None = None,
+    *,
+    bucket: str = BUCKET,
+    dry_run: bool = False,
+) -> dict[str, int]:
+    """Put the kept originals back over the live files, undoing a backfill.
+
+    The copy is server-side, so undoing costs no bandwidth. Afterwards the files carry no id
+    column again and :func:`backfill` will key them afresh — which is the only way to change
+    how ids are made once some files already have them, since a file that has ids is skipped.
+
+    Args:
+        names: Snippet directory names, or ``None`` for every company that has a backup.
+        first: Earliest month, or ``None``.
+        last: Latest month, or ``None``.
+        bucket: The bucket.
+        dry_run: Report what would be restored and change nothing.
+
+    Returns:
+        ``{"restored": …, "missing": …}`` — files put back, and files with no backup to put back.
+    """
+    counts = {"restored": 0, "missing": 0}
+    wanted = {(entity, month) for entity, month, _ in files(names, first, last, bucket)}
+    with OpenClient() as s3:
+        kept: dict[tuple[str, str], str] = {}
+        for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=f"{BACKUP_PREFIX}/"):
+            for item in page.get("Contents", []):
+                parts = item["Key"].removeprefix(f"{BACKUP_PREFIX}/").split("/")
+                if len(parts) == 2 and parts[1].endswith(".parquet"):
+                    kept[(parts[0], parts[1].removesuffix(".parquet"))] = item["Key"]
+        for entity, month in sorted(wanted):
+            spare = kept.get((entity, month))
+            if spare is None:
+                counts["missing"] += 1
+                continue
+            if not dry_run:
+                s3.copy_object(Bucket=bucket, CopySource={"Bucket": bucket, "Key": spare}, Key=key_of(entity, month))
+            counts["restored"] += 1
+    verb = "would restore" if dry_run else "restored"
+    print(
+        f"{verb} {counts['restored']:,} files from {BACKUP_PREFIX}; {counts['missing']:,} had no backup",
+        flush=True,
+    )
+    return counts
 
 
 def manifest(bucket: str = BUCKET) -> int:
@@ -444,6 +542,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     fill.add_argument("--dry-run", action="store_true", help="report what would be rewritten and stop")
     commands.add_parser("verify", help="prove every row has one sound, corpus-unique id")
     commands.add_parser("manifest", help="rebuild file_stats.parquet after a rewrite")
+    back = commands.add_parser("restore", help="put the kept originals back, undoing a backfill")
+    back.add_argument("--entities", help="comma-separated company names (default: every company)")
+    back.add_argument("--months", help="FIRST:LAST, e.g. 2025-01:2025-03 (default: every month)")
+    back.add_argument("--dry-run", action="store_true", help="report what would be restored and stop")
 
     args = parser.parse_args(argv)
     try:
@@ -455,6 +557,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 first,
                 last,
                 backup=not args.no_backup,
+                bucket=args.bucket,
+                dry_run=args.dry_run,
+            )
+        elif args.command == "restore":
+            first, last = _months(args.months)
+            names = [item.strip() for item in args.entities.split(",") if item.strip()] if args.entities else None
+            restore(
+                list(entities(names)) if names else None,
+                first,
+                last,
                 bucket=args.bucket,
                 dry_run=args.dry_run,
             )

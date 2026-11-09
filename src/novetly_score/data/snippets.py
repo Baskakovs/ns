@@ -24,6 +24,11 @@ into the parquet reads rather than applied afterwards.
 occurrence of a sentence; ``md5(snippet)`` addresses the sentence. Embeddings are keyed on the
 latter, because identical text has an identical vector and 2.68 rows share a text.
 
+``snippet_id`` is stored as parquet's UUID type, 16 bytes, and still reaches a frame as
+readable text: DuckDB converts it on the way out through Arrow. Reading the same file directly
+with ``pl.read_parquet`` gives the raw bytes instead, since polars has no UUID dtype — so read
+through this layer and the id is a string you can paste into a query.
+
 **Which files exist is read, not guessed.** ``snippets_manifest/file_stats.parquet`` lists every
 (entity, month) pair with its row count, so the file list comes from a 190 KB read instead of a
 walk of 18,000 keys, and the 309 pairs that exist but hold no rows are skipped rather than
@@ -70,9 +75,9 @@ COMPANY_PREFIX: Final = "company:"
 #: The shape of a month, as the file names spell it.
 MONTH: Final = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
-#: Columns of a snippet file, in file order. ``snippet_id`` is the row's own key, a UUID put
-#: there by :mod:`novetly_score.data.identify` — the text is not a key, since 2.68 rows share
-#: one. ``entity`` holds the full ``yukka_id``, so a frame joins straight back onto a YUKKA
+#: Columns of a snippet file, in file order. ``snippet_id`` is the row's own key, a native
+#: UUID put there by :mod:`novetly_score.data.identify` — the text is not a key, since 2.68
+#: rows share one. ``entity`` holds the full ``yukka_id``, so a frame joins straight back onto a YUKKA
 #: universe; ``snippet`` is the text and dominates the bytes.
 COLUMNS: Final = (
     "snippet_id",

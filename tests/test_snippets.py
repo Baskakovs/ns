@@ -58,7 +58,7 @@ def store(tmp_path_factory):
         path = workdir / f"{name}-{month}.parquet"
         con.execute(
             """COPY (
-                 SELECT uuid()::VARCHAR AS snippet_id,
+                 SELECT uuid() AS snippet_id,
                         'company:' || $entity AS entity,
                         ['pos', 'neu', 'neg'][(i % 3) + 1] AS sentiment,
                         'snippet text ' || i AS snippet,
@@ -346,6 +346,19 @@ class TestWhatIsRead:
         frame = data("company:bmw").snippets.months("2024-07").select("snippet_id").frame
         assert frame.columns == ["snippet_id"]
         assert frame.get_column("snippet_id").n_unique() == frame.height
+
+    def test_the_row_id_arrives_readable(self, env):
+        """Stored as a native UUID, it still reaches a frame as text, because Arrow converts it.
+
+        Worth pinning: polars has no UUID dtype, so a direct ``pl.read_parquet`` of the same
+        file gives 16 opaque bytes. It is the DuckDB-to-Arrow hop this layer reads through that
+        makes the id readable, and a change of engine here would quietly take that away.
+        """
+        import uuid
+
+        frame = data("company:bmw").snippets.months("2024-07").select("snippet_id").frame
+        assert frame.schema["snippet_id"] == pl.String
+        assert uuid.UUID(frame.get_column("snippet_id").item(0)).version == 4
 
     def test_the_span_narrows_the_rows(self, env):
         """File pruning has to show up in the result, not only in the file list."""
