@@ -20,6 +20,10 @@ rows, and the ``snippet`` column is the text itself. ``months()`` drops whole fi
 of them is opened, and ``select()`` drops columns before they are fetched; both are pushed down
 into the parquet reads rather than applied afterwards.
 
+**A row has an id and a text, and they are different keys.** ``snippet_id`` addresses this
+occurrence of a sentence; ``md5(snippet)`` addresses the sentence. Embeddings are keyed on the
+latter, because identical text has an identical vector and 2.68 rows share a text.
+
 **Which files exist is read, not guessed.** ``snippets_manifest/file_stats.parquet`` lists every
 (entity, month) pair with its row count, so the file list comes from a 190 KB read instead of a
 walk of 18,000 keys, and the 309 pairs that exist but hold no rows are skipped rather than
@@ -66,9 +70,12 @@ COMPANY_PREFIX: Final = "company:"
 #: The shape of a month, as the file names spell it.
 MONTH: Final = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
-#: Columns of a snippet file, in file order. ``entity`` holds the full ``yukka_id``, so a frame
-#: joins straight back onto a YUKKA universe; ``snippet`` is the text and dominates the bytes.
+#: Columns of a snippet file, in file order. ``snippet_id`` is the row's own key, a UUID put
+#: there by :mod:`novetly_score.data.identify` — the text is not a key, since 2.68 rows share
+#: one. ``entity`` holds the full ``yukka_id``, so a frame joins straight back onto a YUKKA
+#: universe; ``snippet`` is the text and dominates the bytes.
 COLUMNS: Final = (
+    "snippet_id",
     "entity",
     "sentiment",
     "snippet",

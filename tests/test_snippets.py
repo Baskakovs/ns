@@ -58,7 +58,8 @@ def store(tmp_path_factory):
         path = workdir / f"{name}-{month}.parquet"
         con.execute(
             """COPY (
-                 SELECT 'company:' || $entity AS entity,
+                 SELECT uuid()::VARCHAR AS snippet_id,
+                        'company:' || $entity AS entity,
                         ['pos', 'neu', 'neg'][(i % 3) + 1] AS sentiment,
                         'snippet text ' || i AS snippet,
                         $entity || '-' || $month || '-' || i AS article_id,
@@ -339,6 +340,12 @@ class TestWhatIsRead:
         frame = data("company:bmw").snippets.months("2024-07").frame
         assert frame.columns == list(Snippets(()).select(*frame.columns)._columns)
         assert frame.height == rows_of("bmw") - 7 - 3  # 2024-07 alone
+
+    def test_the_row_id_is_a_column_like_any_other(self, env):
+        """snippet_id addresses the occurrence; it must be selectable on its own."""
+        frame = data("company:bmw").snippets.months("2024-07").select("snippet_id").frame
+        assert frame.columns == ["snippet_id"]
+        assert frame.get_column("snippet_id").n_unique() == frame.height
 
     def test_the_span_narrows_the_rows(self, env):
         """File pruning has to show up in the result, not only in the file list."""
