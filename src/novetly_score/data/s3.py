@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import os
 from types import TracebackType
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Literal
 
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
@@ -65,7 +65,7 @@ class OpenClient:
         secret: str | None = None,
         *,
         region: str = DEFAULT_REGION,
-        addressing_style: str = "path",
+        addressing_style: Literal["auto", "virtual", "path"] = "path",
         connect_timeout: int = 10,
         read_timeout: int = 60,
         retries: int = 3,
@@ -79,7 +79,7 @@ class OpenClient:
             secret: Secret key. Left ``None`` it is read from ``S3_SECRET``.
             region: Region to sign over. MinIO ignores it; SigV4 requires one.
             addressing_style: ``"path"`` for MinIO, whose buckets are not subdomains;
-                ``"virtual"`` for AWS proper.
+                ``"virtual"`` for AWS proper, or ``"auto"`` to let botocore choose.
             connect_timeout: Seconds to wait for the connection.
             read_timeout: Seconds to wait for a response.
             retries: Retries after the first attempt. botocore adds the initial try, so 3

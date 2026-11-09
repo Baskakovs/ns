@@ -24,17 +24,42 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Intended Audience :: Developers",
 ]
-dependencies = []
+dependencies = [
+    "boto3>=1.35",
+    # botocore is imported directly (Config, exceptions), not only via boto3.
+    "botocore>=1.35",
+    # The engine the data layer reads parquet with: range reads straight off the store,
+    # so a filtered query costs a fraction of the object rather than a download.
+    "duckdb>=2.0.0",
+    # polars is imported directly (frames are what the layer returns), not only via yukka.
+    # The duckdb -> polars handoff goes through the Arrow C stream, so no pyarrow is needed.
+    "polars>=2.1",
+    "python-dotenv>=1.0",
+    # The universes the data layer is addressed by: Index.STOXX600 and Asset.
+    "yukka>=3.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/yukka-lab/novetly-score"
 Repository = "https://github.com/yukka-lab/novetly-score"
+
+# deptry cannot infer this module name from the distribution name.
+[tool.deptry.package_module_name_map]
+python-dotenv = "dotenv"
+
+# yukka is a runtime dependency that src imports only under TYPE_CHECKING: data/snippets.py
+# reads a ``yukka_id`` off whatever it is handed rather than importing the classes, so the layer
+# also takes plain ids. It stays a dependency because the universes it is addressed by
+# (Index.STOXX600) come from there, so an install of this package can run the pipeline.
+[tool.deptry.per_rule_ignores]
+DEP002 = ["yukka"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/novetly_score"]
 
 [dependency-groups]
 test = [
+    "moto[s3,server]>=5.0.0",
     "pytest>=8.0.0",
     "pytest-cov>=6.0.0",
     "pytest-xdist>=3.0.0",
@@ -42,4 +67,9 @@ test = [
 lint = [
     "ruff>=0.11.0",
 ]
-dev = []
+# Type stubs only: boto3/botocore ship no py.typed marker, and data/s3.py annotates
+# the client it returns as mypy_boto3_s3.client.S3Client under TYPE_CHECKING.
+dev = [
+    "boto3-stubs[s3]>=1.35",
+    "botocore-stubs>=1.35",
+]
