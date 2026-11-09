@@ -66,6 +66,7 @@ class OpenDuck:
         bucket: str = BUCKET,
         threads: int | None = None,
         memory_limit: str | None = None,
+        temp_directory: str | None = None,
         check: bool = True,
     ) -> None:
         """Record how to open the connection. Reaches no network.
@@ -79,6 +80,8 @@ class OpenDuck:
             threads: Worker threads. Left ``None`` DuckDB uses one per core.
             memory_limit: Buffer-pool size, e.g. ``"8GB"``. Left ``None`` DuckDB takes 80% of RAM.
                 Queries over the larger files spill to disk rather than fail when it is reached.
+            temp_directory: Where to spill. Worth setting for an aggregation over the whole
+                corpus, whose spill is larger than the default location may hold.
             check: List the bucket once on entry. Turn it off only to open against a store that
                 is not up yet.
         """
@@ -87,6 +90,7 @@ class OpenDuck:
         self._bucket = bucket
         self._threads = threads
         self._memory_limit = memory_limit
+        self._temp_directory = temp_directory
         self._check = check
         self._connection: DuckDBPyConnection | None = None
 
@@ -159,6 +163,8 @@ class OpenDuck:
             settings["threads"] = self._threads
         if self._memory_limit is not None:
             settings["memory_limit"] = self._memory_limit
+        if self._temp_directory is not None:
+            settings["temp_directory"] = self._temp_directory
         return settings
 
 
