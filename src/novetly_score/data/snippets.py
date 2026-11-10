@@ -44,7 +44,7 @@ quietly short of a third of its universe is a result that looks fine and is not.
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, timedelta
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final
 
@@ -1000,6 +1000,54 @@ class Universe:
             frame = frame.filter(pl.col("day") <= last_day)
         return frame
 
+    def prices(
+        self,
+        start_date: str | date | None = None,
+        end_date: str | date | None = None,
+        *,
+        adjustment: str = "net",
+        key: str | None = None,
+    ) -> pl.DataFrame:
+        """Read EUR levels for these assets over a span, and return them.
+
+            >>> data(Index.STOXX600.frame).prices("2025-01", "2025-06", key="ric")   # doctest: +SKIP
+
+        The companion to :meth:`counts`, and deliberately the same shape of call: the span is the
+        argument, the frame is the answer, and either end left open runs to the edge of what the
+        feed holds. See :mod:`novetly_score.data.prices` for what the three adjustments are and
+        why a total-return level is only meaningful as a ratio.
+
+        This needs the universe frame, not ids: the store knows what a company is, and only the
+        frame knows which line its prices are filed under.
+
+        Args:
+            start_date: Earliest month or day, or ``None`` for the feed's history start.
+            end_date: Latest month or day, **included**, or ``None`` for today.
+            adjustment: ``"net"`` (dividends reinvested after withholding tax, the default and
+                what a UCITS receives), ``"gross"`` (before it), or ``"raw"`` (the converted
+                close, no dividends). Dividend ex-dates are a 1.5-3% step down in a raw series,
+                clustered in the European spring, so a signal measured against ``raw`` is
+                measured against that too.
+            key: An identifier column of the universe frame to key by — point in time, as the
+                counts are — or ``None`` for the ``yukka_id``.
+
+        Returns:
+            ``entity`` (or *key*), ``date``, ``close_price``, sorted by both. Days a name had no
+            valid close are absent rather than forward-filled.
+
+        Raises:
+            ValueError: If the assets did not arrive as a frame, if *adjustment* is unknown, if a
+                span end is malformed, or if the span runs backwards.
+        """
+        from novetly_score.data import prices as feed
+
+        if self._frame is None:
+            msg = "prices() needs the universe frame: pass it to data() instead of plain ids"
+            raise ValueError(msg)
+        first, last = feed.window(start_date, end_date)
+        rics = self._frame.get_column("ric").drop_nulls().unique().to_list()
+        return feed.keyed(feed.fetch(rics, first, last, adjustment), self._frame, key=key)
+
     @property
     def names(self) -> tuple[str, ...]:
         """The snippet directory names these assets resolved to.
@@ -1093,6 +1141,19 @@ def _span_end(value: str | date | None, which: str) -> tuple[str | None, date | 
             msg = f"{which} {text!r} is not YYYY-MM or YYYY-MM-DD, e.g. '2025-01' or '2025-01-15'"
             raise ValueError(msg) from None
     return f"{value.year:04d}-{value.month:02d}", value
+
+
+def _month_end(month: str) -> date:
+    """The last day of *month*.
+
+    Args:
+        month: A month, ``"YYYY-MM"``.
+
+    Returns:
+        Its final day, so a month given as a span's end means all of it.
+    """
+    following = _shift_month(month, 1)
+    return date.fromisoformat(f"{following}-01") - timedelta(days=1)
 
 
 def _shift_month(month: str, delta: int) -> str:

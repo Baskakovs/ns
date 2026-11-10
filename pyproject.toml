@@ -47,10 +47,10 @@ Repository = "https://github.com/yukka-lab/novetly-score"
 [tool.deptry.package_module_name_map]
 python-dotenv = "dotenv"
 
-# panel.py imports yukka for real — the STOXX 600 universe and the RIC a company's prices are
-# keyed by both come from there. The data layer still does not: data/snippets.py reads a
-# ``yukka_id`` off whatever it is handed rather than importing the classes, which is what lets it
-# take a plain id as readily as a universe.
+# yukka is imported for real by panel.py (the STOXX 600 universe) and data/prices.py (the EUR
+# price and total-return snapshot, which is a YUKKA product). data/snippets.py still does not: it
+# reads a ``yukka_id`` off whatever it is handed rather than importing the classes, which is what
+# lets the snippets be addressed by a plain id as readily as by a universe.
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/novetly_score"]

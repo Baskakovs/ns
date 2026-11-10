@@ -1,10 +1,13 @@
 """Access to the experiment's data on the S3-compatible object store.
 
 Two ways in, for two kinds of work. :class:`OpenClient` is the object store itself — listing,
-fetching and writing whole keys. :func:`data` reads the datasets *through* the objects: it takes
-the assets of a YUKKA universe and hands back the rows the store holds for them, reading only
-the files and columns a query asks for — or, through :class:`Counts`, the daily article counts
-those rows reduce to, aggregated in the store's engine rather than in Python.
+fetching and writing whole keys. :func:`data` reads the datasets a universe of assets *has*: the
+snippet rows the store holds for them, the daily article counts those rows reduce to
+(:meth:`~novetly_score.data.Universe.counts`, aggregated in the store's engine rather than in
+Python), and the EUR levels they are measured against
+(:meth:`~novetly_score.data.Universe.prices`, from YUKKA's LSEG snapshot). Both panels can be
+keyed by the identifier each company held on each day, so they join without a bridge per caller.
+
 :class:`OpenDuck` is the engine underneath, for a query that outgrows :func:`data`.
 """
 
