@@ -49,9 +49,9 @@ COMPANY_PREFIX: Final = "company:"
 MONTH: Final = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 #: Columns of a snippet file, in file order. ``snippet_id`` is the row's own key, a native UUID
-#: put there by :mod:`novetly_score.data.identify`; ``entity`` holds the full ``yukka_id``, so a
-#: frame joins straight back onto a YUKKA universe; ``snippet`` is the text and dominates the
-#: bytes. A file not yet carrying an id has every column but the first.
+#: unique across all 181,276,415 rows of the corpus; ``entity`` holds the full ``yukka_id``, so
+#: a frame joins straight back onto a YUKKA universe; ``snippet`` is the text and dominates the
+#: bytes.
 COLUMNS: Final = (
     "snippet_id",
     "entity",
