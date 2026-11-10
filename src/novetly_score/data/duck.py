@@ -29,12 +29,17 @@ that DuckDB keeps in its query log; the settings go into the connection's config
 from __future__ import annotations
 
 from types import TracebackType
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, TypeAlias
 
 from novetly_score.data.s3 import DEFAULT_REGION, PERMITTED_DENIALS, ConnectionFailedError, _credentials
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
+
+#: What ``duckdb.connect`` accepts as a config value. Spelled out rather than widened to
+#: ``object`` because a dict's value type is invariant: a narrower mapping is not assignable
+#: to the parameter, so the alias has to match the signature it is passed to.
+Setting: TypeAlias = "str | bool | int | float | list[str]"
 
 #: Bucket holding the experiment's data.
 BUCKET: Final = "quant-experiments"
@@ -66,6 +71,7 @@ class OpenDuck:
         bucket: str = BUCKET,
         threads: int | None = None,
         memory_limit: str | None = None,
+        temp_directory: str | None = None,
         check: bool = True,
     ) -> None:
         """Record how to open the connection. Reaches no network.
@@ -79,6 +85,8 @@ class OpenDuck:
             threads: Worker threads. Left ``None`` DuckDB uses one per core.
             memory_limit: Buffer-pool size, e.g. ``"8GB"``. Left ``None`` DuckDB takes 80% of RAM.
                 Queries over the larger files spill to disk rather than fail when it is reached.
+            temp_directory: Where to spill. Worth setting for an aggregation over the whole
+                corpus, whose spill is larger than the default location may hold.
             check: List the bucket once on entry. Turn it off only to open against a store that
                 is not up yet.
         """
@@ -87,6 +95,7 @@ class OpenDuck:
         self._bucket = bucket
         self._threads = threads
         self._memory_limit = memory_limit
+        self._temp_directory = temp_directory
         self._check = check
         self._connection: DuckDBPyConnection | None = None
 
@@ -130,7 +139,7 @@ class OpenDuck:
         if connection is not None:
             connection.close()
 
-    def _settings(self, endpoint: str, access_key: str, secret: str) -> dict[str, object]:
+    def _settings(self, endpoint: str, access_key: str, secret: str) -> dict[str, Setting]:
         """Translate an endpoint URL and a key pair into DuckDB's S3 settings.
 
         DuckDB wants the host without its scheme and a separate flag for TLS, so the one URL in
@@ -147,7 +156,7 @@ class OpenDuck:
             A config dict for ``duckdb.connect``.
         """
         scheme, _, host = endpoint.partition("://")
-        settings: dict[str, object] = {
+        settings: dict[str, Setting] = {
             "s3_endpoint": host or scheme,  # no scheme given: the whole string is the host
             "s3_access_key_id": access_key,
             "s3_secret_access_key": secret,
@@ -159,6 +168,8 @@ class OpenDuck:
             settings["threads"] = self._threads
         if self._memory_limit is not None:
             settings["memory_limit"] = self._memory_limit
+        if self._temp_directory is not None:
+            settings["temp_directory"] = self._temp_directory
         return settings
 
 
