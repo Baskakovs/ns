@@ -6,6 +6,9 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 
+[manifest]
+constraints = [{ name = "cvx-linalg", specifier = "<0.9" }]
+
 [[package]]
 name = "annotated-types"
 version = "0.8.0"
@@ -57,6 +60,27 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/14/25/0cbd7a440080def5e6f063720c3b190a25f8aa2938c1e34415dc18241596/aws_xray_sdk-2.15.0.tar.gz", hash = "sha256:794381b96e835314345068ae1dd3b9120bd8b4e21295066c37e8814dbb341365", size = 76315, upload-time = "2025-10-29T20:59:45Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ef/c3/f30a7a63e664acc7c2545ca0491b6ce8264536e0e5cad3965f1d1b91e960/aws_xray_sdk-2.15.0-py2.py3-none-any.whl", hash = "sha256:422d62ad7d52e373eebb90b642eb1bb24657afe03b22a8df4a8b2e5108e278a3", size = 103228, upload-time = "2025-10-29T21:00:24.12Z" },
+]
+
+[[package]]
+name = "basanos"
+version = "0.7.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cvx-linalg" },
+    { name = "jinja2" },
+    { name = "jquantstats" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "plotly" },
+    { name = "polars" },
+    { name = "pydantic" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a2/74/b2f38fb03d842e23cb8242181876806296005c75d3be181331bbd09c53f5/basanos-0.7.3.tar.gz", hash = "sha256:6a849843e1a36613c593481a63d196de9db55c489f2d9371da2e38acee98e26a", size = 748736, upload-time = "2026-06-17T11:04:09.303Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/17/f0/cca83cd40f76d7724149eb7a503241b40bdfe47f2a6743647e259731abfe/basanos-0.7.3-py3-none-any.whl", hash = "sha256:ea9487c4cc79fba38ea981be87c4b38ad06972c016d0537dc92fbc7ab2e3e37d", size = 77569, upload-time = "2026-06-17T11:04:07.714Z" },
 ]
 
 [[package]]
@@ -570,6 +594,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b6/b1/d9121a717e0f893c64bd6ca7702614778d7df2a5c309128a002421788516/cryptography-50.0.2-pp311-pypy311_pp73-manylinux_2_34_x86_64.whl", hash = "sha256:1ba34f04897fcdaa73f74145c25f3ec146fbd56593853e88adc2e811303c5f42", size = 4726322, upload-time = "2026-09-30T15:29:54.263Z" },
     { url = "https://files.pythonhosted.org/packages/36/8b/e6d153808bf353e152abd2fd4d8f09670d956ac78379ac46e60d7efbf04c/cryptography-50.0.2-pp311-pypy311_pp80-macosx_11_0_arm64.whl", hash = "sha256:3dc4fd8058cea1644971207d530e1a03a184a805ffc8ebdddf0599d78a331b81", size = 3873097, upload-time = "2026-09-30T15:29:56.097Z" },
     { url = "https://files.pythonhosted.org/packages/ca/1d/1271f287ff7170ddafc2aad36260c4eec20ccd2fea70f38455e9d56d427b/cryptography-50.0.2-pp311-pypy311_pp80-win_amd64.whl", hash = "sha256:7b75de3c8b3be1cdb1052747c929440c3eea46c1bc2cb8a6e3a48388e9b7b452", size = 3805376, upload-time = "2026-09-30T15:29:58.729Z" },
+]
+
+[[package]]
+name = "cvx-linalg"
+version = "0.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b8/a0/a1c198e4e01bf1eb2e61bdc81943be7fe80aad5c1fdff2504bf209505503/cvx_linalg-0.8.0.tar.gz", hash = "sha256:38533d446b88300c7dd776efee10105fce293e5a51819f9c42be38bbc8352ed8", size = 25520, upload-time = "2026-06-16T14:25:31.41Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3f/1a/13c31e88049fb033d3e858ba94e6d0a5aff812aff4f5857e29105efc18b8/cvx_linalg-0.8.0-py3-none-any.whl", hash = "sha256:8c2fc777037eb26ec30b5dc242ddfc05663a8d78f85e96180acd25a0a9cea61a", size = 28527, upload-time = "2026-06-16T14:25:30.238Z" },
 ]
 
 [[package]]
@@ -1521,6 +1558,7 @@ lint = [
     { name = "ruff" },
 ]
 notebook = [
+    { name = "basanos" },
     { name = "jquantstats" },
     { name = "marimo" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -1551,6 +1589,7 @@ dev = [
 ]
 lint = [{ name = "ruff", specifier = ">=0.11.0" }]
 notebook = [
+    { name = "basanos", specifier = ">=0.7.3" },
     { name = "jquantstats", specifier = ">=0.13" },
     { name = "marimo", specifier = ">=0.19" },
     { name = "numpy", specifier = ">=2" },

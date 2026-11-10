@@ -77,8 +77,17 @@ dev = [
 # pull a notebook server; deptry's DEP004 is ignored for the notebook folder for the same reason
 # (see .rhiza/make.d/marimo.mk).
 notebook = [
+    "basanos>=0.7.3",
     "jquantstats>=0.13",
     "marimo>=0.19",
     "numpy>=2",
     "plotly>=6",
 ]
+
+# basanos 0.7.3 imports cvx.linalg.ewm_cov, a module cvx-linalg dropped in 0.9.0, but declares
+# only cvx-linalg>=0.6.1. An unconstrained resolve therefore installs 1.x and `import
+# basanos.math` fails outright with ModuleNotFoundError. Pinned here as a constraint rather than
+# as a dependency because nothing in this repo imports cvx-linalg -- it is basanos's own
+# requirement, corrected. Drop this once basanos tracks the module's new home.
+[tool.uv]
+constraint-dependencies = ["cvx-linalg<0.9"]
