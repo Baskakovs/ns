@@ -1,8 +1,9 @@
-"""The STOXX 600's tone counts, keyed by RIC: ``date, ric, pos, neu, neg``.
+"""The STOXX 600's tone counts keyed by RIC, and the ratio they reduce to.
 
-    from novetly_score.panel import counts
+    from novetly_score.panel import counts, sentiment
 
     frame = counts("2025-01", "2025-06")
+    score = sentiment(frame)
 
 Everything here is convenience over one call in the data layer::
 
@@ -12,6 +13,10 @@ What this module adds is the two things that call cannot know: which universe (t
 which is a YUKKA call and a token) and what to call the columns. The counting, the span and the
 PIT RIC keying are all the layer's, so there is one definition of each — see
 :meth:`novetly_score.data.Universe.counts` and :func:`novetly_score.data.as_of`.
+
+:func:`sentiment` is the one expression this module owns rather than delegates. It is kept out
+of the data layer on purpose: the layer counts, and a count is a fact about the store, while the
+ratio is the experiment's choice of how to read those counts.
 """
 
 from __future__ import annotations
@@ -25,6 +30,9 @@ from novetly_score.data import data
 
 #: Columns of the panel, in order.
 COLUMNS = ("date", "ric", "pos", "neu", "neg")
+
+#: Columns of the sentiment frame, in order.
+SENTIMENT_COLUMNS = ("date", "ric", "sentiment")
 
 
 def counts(
@@ -59,3 +67,39 @@ def counts(
     frame = Index.STOXX600.frame if universe is None else universe
     panel = data(frame).counts(start_date, end_date, key="ric")
     return panel.select(date="day", ric="ric", pos="positive", neu="neutral", neg="negative").sort("date", "ric")
+
+
+def sentiment(frame: pl.DataFrame) -> pl.DataFrame:
+    """The Laplace-smoothed tone ratio `S = (P + 1) / (P + N + 2)` per RIC and day.
+
+        >>> score = sentiment(counts("2025-01", "2025-06"))     # doctest: +SKIP
+
+    `P` and `N` are the ``pos`` and ``neg`` **article** counts of :func:`counts`. The ``+1`` and
+    ``+2`` are a Beta(1, 1) prior: a day with one positive article and nothing else scores 2/3
+    rather than 1, so a company with thin coverage is pulled towards 0.5 instead of to an
+    extreme. The denominator is therefore never zero and the result is always in (0, 1).
+
+    **``neu`` does not appear, and that is the definition, not an omission.** The ratio is over
+    the two signed tones only, so a day of ten neutral articles and a day of one neutral article
+    both score 0.5 — the same as a day with one positive and one negative. Neutral volume is
+    carried by :func:`counts`, where a caller who wants to weight by it can read it.
+
+    Args:
+        frame: A counts frame, as :func:`counts` returns. Needs ``date``, ``ric``, ``pos`` and
+            ``neg``; any other column, ``neu`` included, is ignored.
+
+    Returns:
+        ``date``, ``ric``, ``sentiment``, sorted by date then RIC — one row per row of *frame*,
+        and so carrying its coverage exactly: a company and day absent from the counts is absent
+        here rather than scored 0.5. A row whose counts are null scores null.
+
+    Raises:
+        ValueError: If *frame* is missing any of ``date``, ``ric``, ``pos`` or ``neg``.
+    """
+    required = ("date", "ric", "pos", "neg")
+    missing = [column for column in required if column not in frame.columns]
+    if missing:
+        msg = f"counts frame is missing {', '.join(missing)}. Needs: {', '.join(required)}"
+        raise ValueError(msg)
+    ratio = (pl.col("pos") + 1) / (pl.col("pos") + pl.col("neg") + 2)
+    return frame.select("date", "ric", sentiment=ratio.cast(pl.Float64)).sort("date", "ric")

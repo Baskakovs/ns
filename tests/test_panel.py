@@ -1,11 +1,105 @@
-"""Tests for the RIC-keyed panel: the one month of the real store it is a thin wrapper over."""
+"""Tests for the RIC-keyed panel.
+
+One month of the real store, which the panel is a thin wrapper over, and the one expression it
+owns rather than delegates.
+"""
 
 from __future__ import annotations
 
 import polars as pl
 import pytest
 
-from novetly_score.panel import COLUMNS, counts
+from novetly_score.panel import COLUMNS, SENTIMENT_COLUMNS, counts, sentiment
+
+
+def _counts(rows: list[tuple]) -> pl.DataFrame:
+    """A counts frame as :func:`counts` returns one, from ``(date, ric, pos, neu, neg)`` rows."""
+    return pl.DataFrame(rows, schema=list(COLUMNS), orient="row")
+
+
+class TestSentiment:
+    """`S = (P + 1) / (P + N + 2)` over a counts frame."""
+
+    def test_columns_and_dtype(self):
+        """The frame is ``date, ric, sentiment``, the ratio a float."""
+        frame = sentiment(_counts([("2025-01-02", "BMW.DE", 3, 5, 1)]))
+
+        assert frame.columns == list(SENTIMENT_COLUMNS)
+        assert frame.schema["sentiment"] == pl.Float64
+
+    @pytest.mark.parametrize(
+        ("pos", "neg", "expected"),
+        [
+            (0, 0, 0.5),  # no signed article at all: the prior, untouched
+            (1, 0, 2 / 3),  # one positive is not certainty
+            (0, 1, 1 / 3),  # and one negative is its mirror
+            (1, 1, 0.5),  # balanced, so back to the prior
+            (3, 1, 4 / 6),
+            (99, 0, 100 / 101),  # deep coverage approaches 1 without reaching it
+        ],
+    )
+    def test_the_ratio(self, pos, neg, expected):
+        """The smoothing is Beta(1, 1): the score is in (0, 1) and never at an extreme."""
+        frame = sentiment(_counts([("2025-01-02", "BMW.DE", pos, 0, neg)]))
+
+        assert frame.item(0, "sentiment") == pytest.approx(expected)
+        assert 0.0 < frame.item(0, "sentiment") < 1.0
+
+    def test_neutral_is_not_in_the_ratio(self):
+        """``neu`` is excluded by definition, so neutral volume cannot move the score."""
+        quiet = sentiment(_counts([("2025-01-02", "BMW.DE", 1, 0, 1)]))
+        loud = sentiment(_counts([("2025-01-02", "BMW.DE", 1, 500, 1)]))
+
+        assert quiet.item(0, "sentiment") == loud.item(0, "sentiment") == 0.5
+
+    def test_coverage_is_carried_not_filled(self):
+        """One row out per row in: a missing company-day stays missing rather than scoring 0.5."""
+        frame = _counts([("2025-01-02", "BMW.DE", 1, 0, 0), ("2025-01-03", "SAP.DE", 0, 0, 2)])
+
+        assert sentiment(frame).height == frame.height
+
+    def test_nulls_propagate(self):
+        """A null count scores null — unknown is not 0.5."""
+        frame = sentiment(
+            pl.DataFrame(
+                {"date": ["2025-01-02"], "ric": ["BMW.DE"], "pos": [None], "neu": [0], "neg": [1]},
+                schema={"date": pl.String, "ric": pl.String, "pos": pl.Int64, "neu": pl.Int64, "neg": pl.Int64},
+            )
+        )
+
+        assert frame.item(0, "sentiment") is None
+
+    def test_sorted_by_date_then_ric(self):
+        """The frame comes back in panel order however it arrived."""
+        frame = sentiment(
+            _counts(
+                [
+                    ("2025-01-03", "SAP.DE", 1, 0, 0),
+                    ("2025-01-02", "SAP.DE", 1, 0, 0),
+                    ("2025-01-02", "BMW.DE", 1, 0, 0),
+                ]
+            )
+        )
+
+        assert frame.select("date", "ric").rows() == [
+            ("2025-01-02", "BMW.DE"),
+            ("2025-01-02", "SAP.DE"),
+            ("2025-01-03", "SAP.DE"),
+        ]
+
+    def test_extra_columns_are_ignored(self):
+        """A frame carrying more than the counts is read for what it needs."""
+        frame = _counts([("2025-01-02", "BMW.DE", 1, 0, 0)]).with_columns(uncharacterised=pl.lit(7))
+
+        assert sentiment(frame).columns == list(SENTIMENT_COLUMNS)
+
+    @pytest.mark.parametrize("dropped", ["date", "ric", "pos", "neg"])
+    def test_a_missing_column_is_an_error(self, dropped):
+        """Naming what is absent beats a KeyError from inside polars."""
+        frame = _counts([("2025-01-02", "BMW.DE", 1, 0, 0)]).drop(dropped)
+
+        with pytest.raises(ValueError, match=f"missing {dropped}"):
+            sentiment(frame)
 
 
 @pytest.mark.integration
