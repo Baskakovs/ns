@@ -47,12 +47,10 @@ Repository = "https://github.com/yukka-lab/novetly-score"
 [tool.deptry.package_module_name_map]
 python-dotenv = "dotenv"
 
-# yukka is a runtime dependency that src imports only under TYPE_CHECKING: data/snippets.py
-# reads a ``yukka_id`` off whatever it is handed rather than importing the classes, so the layer
-# also takes plain ids. It stays a dependency because the universes it is addressed by
-# (Index.STOXX600) come from there, so an install of this package can run the pipeline.
-[tool.deptry.per_rule_ignores]
-DEP002 = ["yukka"]
+# panel.py imports yukka for real — the STOXX 600 universe and the RIC a company's prices are
+# keyed by both come from there. The data layer still does not: data/snippets.py reads a
+# ``yukka_id`` off whatever it is handed rather than importing the classes, which is what lets it
+# take a plain id as readily as a universe.
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/novetly_score"]
@@ -72,4 +70,15 @@ lint = [
 dev = [
     "boto3-stubs[s3]>=1.35",
     "botocore-stubs>=1.35",
+]
+# What the marimo notebooks under docs/notebooks import and src never does: the notebook
+# runtime, the stats/plot layer the IC baseline reports through, and their own numerics.
+# Declared as a group rather than a project dependency so an install of this package does not
+# pull a notebook server; deptry's DEP004 is ignored for the notebook folder for the same reason
+# (see .rhiza/make.d/marimo.mk).
+notebook = [
+    "jquantstats>=0.13",
+    "marimo>=0.19",
+    "numpy>=2",
+    "plotly>=6",
 ]
