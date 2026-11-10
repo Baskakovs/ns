@@ -29,12 +29,17 @@ that DuckDB keeps in its query log; the settings go into the connection's config
 from __future__ import annotations
 
 from types import TracebackType
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, TypeAlias
 
 from novetly_score.data.s3 import DEFAULT_REGION, PERMITTED_DENIALS, ConnectionFailedError, _credentials
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
+
+#: What ``duckdb.connect`` accepts as a config value. Spelled out rather than widened to
+#: ``object`` because a dict's value type is invariant: a narrower mapping is not assignable
+#: to the parameter, so the alias has to match the signature it is passed to.
+Setting: TypeAlias = "str | bool | int | float | list[str]"
 
 #: Bucket holding the experiment's data.
 BUCKET: Final = "quant-experiments"
@@ -134,7 +139,7 @@ class OpenDuck:
         if connection is not None:
             connection.close()
 
-    def _settings(self, endpoint: str, access_key: str, secret: str) -> dict[str, object]:
+    def _settings(self, endpoint: str, access_key: str, secret: str) -> dict[str, Setting]:
         """Translate an endpoint URL and a key pair into DuckDB's S3 settings.
 
         DuckDB wants the host without its scheme and a separate flag for TLS, so the one URL in
@@ -151,7 +156,7 @@ class OpenDuck:
             A config dict for ``duckdb.connect``.
         """
         scheme, _, host = endpoint.partition("://")
-        settings: dict[str, object] = {
+        settings: dict[str, Setting] = {
             "s3_endpoint": host or scheme,  # no scheme given: the whole string is the host
             "s3_access_key_id": access_key,
             "s3_secret_access_key": secret,
