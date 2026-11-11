@@ -57,7 +57,10 @@ packages = ["src/novetly_score"]
 
 [dependency-groups]
 test = [
-    "moto[s3,server]>=5.0.0",
+    # 5.0.13 is where ThreadedMotoServer.get_host_and_port lands, which the fixture store in
+    # tests/test_snippets.py uses to find the port it asked the OS to pick. Below it the whole
+    # suite errors at fixture setup, which the lowest-direct CI resolve is there to catch.
+    "moto[s3,server]>=5.0.13",
     "pytest>=8.0.0",
     "pytest-cov>=6.0.0",
     "pytest-xdist>=3.0.0",
