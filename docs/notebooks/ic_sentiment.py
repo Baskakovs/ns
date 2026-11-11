@@ -6,24 +6,33 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _():
+    import os
+
     import marimo as mo
     import numpy as np
     import polars as pl
     from basanos.math import BasanosConfig, BasanosEngine
+    from dotenv import load_dotenv
     from yukka.data import Index
 
     from novetly_score.align import entry_day, pit_members, tradable, trading_days, wide
     from novetly_score.data import data
+    from novetly_score.data.s3 import ACCESS_KEY_VAR, ENDPOINT_VAR, SECRET_VAR
     from novetly_score.panel import sentiment
 
     return (
+        ACCESS_KEY_VAR,
         BasanosConfig,
         BasanosEngine,
+        ENDPOINT_VAR,
         Index,
+        SECRET_VAR,
         data,
         entry_day,
+        load_dotenv,
         mo,
         np,
+        os,
         pit_members,
         pl,
         sentiment,

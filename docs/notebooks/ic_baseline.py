@@ -6,26 +6,35 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _():
+    import os
+
     import marimo as mo
     import numpy as np
     import plotly.graph_objects as go
     import polars as pl
     from basanos.math import BasanosConfig, BasanosEngine
+    from dotenv import load_dotenv
     from yukka.data import Index
 
     from novetly_score.align import entry_day, pit_members, tradable, trading_days, wide
     from novetly_score.data import data
+    from novetly_score.data.s3 import ACCESS_KEY_VAR, ENDPOINT_VAR, SECRET_VAR
     from novetly_score.panel import sentiment
 
     return (
+        ACCESS_KEY_VAR,
         BasanosConfig,
         BasanosEngine,
+        ENDPOINT_VAR,
         Index,
+        SECRET_VAR,
         data,
         entry_day,
         go,
+        load_dotenv,
         mo,
         np,
+        os,
         pit_members,
         pl,
         sentiment,
@@ -65,7 +74,16 @@ def _():
 
 
 @app.cell
-def _(Index, data):
+def _(ACCESS_KEY_VAR, ENDPOINT_VAR, Index, SECRET_VAR, data, load_dotenv, mo, os):
+    # The MARIMO and BOOK jobs run this notebook with no credentials, so stop here with a note
+    # rather than fail: every cell below needs the store and a YUKKA token. .env is loaded the
+    # way the data layer loads it, so a local run with a .env is unaffected.
+    load_dotenv()
+    missing = [name for name in (ENDPOINT_VAR, ACCESS_KEY_VAR, SECRET_VAR, "YUKKA_TOKEN") if not os.environ.get(name)]
+    mo.stop(
+        bool(missing),
+        mo.md(f"**Not run.** Set `{'`, `'.join(missing)}` to read the store and the universe."),
+    )
     # One view of the store, both panels off it: same interface, same keys, same column names.
     store = data(Index.STOXX600.frame)
     membership = Index.STOXX600.membership_history

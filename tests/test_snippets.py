@@ -133,8 +133,10 @@ def store(tmp_path_factory):
     """
     server = ThreadedMotoServer(port=0, verbose=False)
     server.start()
-    host, port = server.get_host_and_port()
-    endpoint = f"http://{host}:{port}"
+    # the server reports the address it bound, which is 0.0.0.0; Windows refuses to *connect*
+    # to that (WinError 10049), so the loopback it also listens on is what the client gets
+    _host, port = server.get_host_and_port()
+    endpoint = f"http://127.0.0.1:{port}"
 
     s3 = boto3.client(
         "s3",

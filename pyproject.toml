@@ -21,7 +21,6 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
-    "License :: OSI Approved :: MIT License",
     "Intended Audience :: Developers",
 ]
 dependencies = [
@@ -45,6 +44,20 @@ Homepage = "https://github.com/yukka-lab/novetly-score"
 Repository = "https://github.com/yukka-lab/novetly-score"
 
 # deptry cannot infer this module name from the distribution name.
+# Discoverable by bump-my-version, which otherwise falls back to `git describe` and can cut a
+# release at a version that already exists. .rhiza/.cfg.toml is never auto-discovered (it
+# predates jebel-quant/rhiza#1453), so the table lives here.
+[tool.bumpversion]
+current_version = "0.1.0"
+allow_dirty = false
+commit = false
+tag = false
+
+[[tool.bumpversion.files]]
+filename = "pyproject.toml"
+search = 'version = "{current_version}"'
+replace = 'version = "{new_version}"'
+
 [tool.deptry.package_module_name_map]
 python-dotenv = "dotenv"
 
@@ -95,3 +108,9 @@ notebook = [
 # requirement, corrected. Drop this once basanos tracks the module's new home.
 [tool.uv]
 constraint-dependencies = ["cvx-linalg<0.9"]
+# The MARIMO and BOOK workflows run each notebook with `uv run`, which installs the project
+# environment and nothing else, so a notebook-only dependency is invisible to them -- both jobs
+# failed on `No module named 'marimo'` and `No module named 'numpy'`. A group is still never part
+# of the published wheel, so declaring it a default group keeps the "an install of this package
+# does not pull a notebook server" intent while making CI able to run the notebooks at all.
+default-groups = ["dev", "notebook"]
