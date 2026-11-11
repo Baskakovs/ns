@@ -53,7 +53,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 import polars as pl
 
@@ -304,7 +304,7 @@ def batches(frame: pl.DataFrame) -> Iterator[pl.DataFrame]:
         yield frame[start:]
 
 
-def _client(api_key: str | None):  # noqa: ANN202 — the SDK's type is only importable at runtime
+def _client(api_key: str | None) -> Any:  # the SDK's type is only importable at runtime
     """Build an OpenAI client, retrying nothing the script retries itself.
 
     Args:
@@ -328,7 +328,12 @@ def _client(api_key: str | None):  # noqa: ANN202 — the SDK's type is only imp
     return OpenAI(api_key=key, max_retries=0, timeout=120.0)
 
 
-def embed_batch(client, batch: pl.DataFrame, layout: Layout, limiter: Limiter) -> tuple[list[list[float]], int]:  # noqa: ANN001 — SDK type, see _client
+def embed_batch(
+    client: Any,  # an SDK type, see _client
+    batch: pl.DataFrame,
+    layout: Layout,
+    limiter: Limiter,
+) -> tuple[list[list[float]], int]:
     """Embed one batch, retrying on the failures that are worth retrying.
 
     Args:
@@ -379,7 +384,7 @@ def _retryable(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None)
     if status is None:
         return True  # a timeout or a dropped connection carries no status
-    return status == 429 or status >= 500
+    return bool(status == 429 or status >= 500)
 
 
 def file_list(con: DuckDBPyConnection, names: Sequence[str] | None, first: str | None, last: str | None) -> list[str]:
@@ -567,7 +572,7 @@ def embed(
 
 
 def _embed_shard(
-    client,  # noqa: ANN001 — an SDK type, importable only at runtime; see _client
+    client: Any,  # an SDK type, importable only at runtime; see _client
     limiter: Limiter,
     layout: Layout,
     shard: str,

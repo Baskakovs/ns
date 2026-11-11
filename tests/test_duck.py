@@ -52,6 +52,7 @@ def fake_duck(monkeypatch):
     """Install a FakeConnection in place of DuckDB's, so the check meets a scripted answer."""
 
     def install(error=None):
+        """Put the fake module in sys.modules for the duration of the test."""
         connection = FakeConnection(error)
         monkeypatch.setattr(duckdb, "connect", lambda **_kwargs: connection)
         return connection

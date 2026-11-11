@@ -12,6 +12,10 @@ output/
 
 __marimo__
 
+# Notebook artefacts: the counts cache and the IC series the marimo notebooks write
+# (NOTEBOOK_OUTPUT_FOLDER, or results/<notebook> by default).
+results
+
 _tests
 _book
 _pdoc

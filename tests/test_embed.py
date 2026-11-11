@@ -162,6 +162,7 @@ def stub(monkeypatch):
     """Install a StubClient in place of the OpenAI one, and hand it back for inspection."""
 
     def install(errors=None):
+        """Build the stub, with an optional list of errors for it to raise in order."""
         client = StubClient(errors)
         monkeypatch.setattr("novetly_score.data.embed._client", lambda _key: client)
         return client

@@ -48,19 +48,20 @@ Repository = "https://github.com/yukka-lab/novetly-score"
 [tool.deptry.package_module_name_map]
 python-dotenv = "dotenv"
 
-# yukka is a runtime dependency that src imports only under TYPE_CHECKING: data/snippets.py
-# reads a ``yukka_id`` off whatever it is handed rather than importing the classes, so the layer
-# also takes plain ids. It stays a dependency because the universes it is addressed by
-# (Index.STOXX600) come from there, so an install of this package can run the pipeline.
-[tool.deptry.per_rule_ignores]
-DEP002 = ["yukka"]
+# yukka is imported for real by panel.py (the STOXX 600 universe) and data/prices.py (the EUR
+# price and total-return snapshot, which is a YUKKA product). data/snippets.py still does not: it
+# reads a ``yukka_id`` off whatever it is handed rather than importing the classes, which is what
+# lets the snippets be addressed by a plain id as readily as by a universe.
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/novetly_score"]
 
 [dependency-groups]
 test = [
-    "moto[s3,server]>=5.0.0",
+    # 5.0.13 is where ThreadedMotoServer.get_host_and_port lands, which the fixture store in
+    # tests/test_snippets.py uses to find the port it asked the OS to pick. Below it the whole
+    # suite errors at fixture setup, which the lowest-direct CI resolve is there to catch.
+    "moto[s3,server]>=5.0.13",
     "pytest>=8.0.0",
     "pytest-cov>=6.0.0",
     "pytest-xdist>=3.0.0",
@@ -74,3 +75,23 @@ dev = [
     "boto3-stubs[s3]>=1.35",
     "botocore-stubs>=1.35",
 ]
+# What the marimo notebooks under docs/notebooks import and src never does: the notebook
+# runtime, the stats/plot layer the IC baseline reports through, and their own numerics.
+# Declared as a group rather than a project dependency so an install of this package does not
+# pull a notebook server; deptry's DEP004 is ignored for the notebook folder for the same reason
+# (see .rhiza/make.d/marimo.mk).
+notebook = [
+    "basanos>=0.7.3",
+    "jquantstats>=0.13",
+    "marimo>=0.19",
+    "numpy>=2",
+    "plotly>=6",
+]
+
+# basanos 0.7.3 imports cvx.linalg.ewm_cov, a module cvx-linalg dropped in 0.9.0, but declares
+# only cvx-linalg>=0.6.1. An unconstrained resolve therefore installs 1.x and `import
+# basanos.math` fails outright with ModuleNotFoundError. Pinned here as a constraint rather than
+# as a dependency because nothing in this repo imports cvx-linalg -- it is basanos's own
+# requirement, corrected. Drop this once basanos tracks the module's new home.
+[tool.uv]
+constraint-dependencies = ["cvx-linalg<0.9"]
