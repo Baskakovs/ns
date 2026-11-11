@@ -260,13 +260,29 @@ def _(nonzero, plot):
 
 
 @app.cell
+def _(mo):
+    mo.md("""
+    ## Mean IC and its t-statistic
+
+    `t` is the mean of the daily IC series over its standard error, `mean / (sd / sqrt(days))`.
+    These marginal ICs use one-day returns that do not overlap between consecutive days, so the
+    t-statistic is not inflated by overlap the way a cumulative one would be — though the signal
+    itself is autocorrelated, so read |t| ≈ 2 as suggestive rather than decisive.
+    """)
+    return
+
+
+@app.cell
 def _(nonzero, pl, signals, table):
     pl.concat(
         [
-            frame.with_columns(scope=pl.lit(label)).pivot(on="signal", index=["scope", "h"], values="ic")
-            for label, frame in (("all", table), ("score > 0", nonzero))
+            frame.with_columns(scope=pl.lit(label), stat=pl.lit(stat))
+            .pivot(on="signal", index=["scope", "stat", "h"], values=stat)
+            .with_columns(pl.col(list(signals)).round(5 if stat == "ic" else 2))
+            for label, frame in (("all", table), ("tightened", nonzero))
+            for stat in ("ic", "t")
         ]
-    ).with_columns(pl.col(list(signals)).round(5))
+    ).sort("scope", "stat", "h")
     return
 
 
