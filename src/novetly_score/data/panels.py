@@ -1,9 +1,9 @@
 """The counts panel, derived once and kept in the store instead of recomputed per caller.
 
-    from novetly_score.data import read_counts, write_counts
+    from novetly_score.data import write_counts
 
-    write_counts()          # once, after the store changes: ~4 minutes
-    tone = read_counts()    # thereafter: one 5 MB object
+    write_counts()                              # once, after the store changes
+    tone = data(universe).counts(key="ric")     # thereafter: one small object
 
 :meth:`novetly_score.data.Universe.counts` aggregates 181 million snippet rows across 18,183
 parquet files to produce 472 thousand rows. The aggregation runs in the store's engine, so the
@@ -13,7 +13,7 @@ queues. Nothing about the result changes unless the store does, so paying that p
 or, with a reactive notebook, per edit — is the whole cost of this layer for none of the benefit.
 
 **The panel is derived, so it can go stale, so it carries a stamp.** ``panels/counts.stamp.json``
-records the file count, row count and last month the panel was built from, and :func:`read_counts`
+records the file count, row count and last month the panel was built from, and :func:`read_panel`
 compares it against the live manifest before handing the frame over. A store that has grown a
 month since the panel was written raises :class:`StalePanelError` rather than quietly answering
 with a panel that stops short. The check is one 190 KB read, which is the right price for not
@@ -44,8 +44,10 @@ COUNTS_KEY: Final = "panels/counts.parquet"
 #: Key its provenance is written to, beside it.
 STAMP_KEY: Final = "panels/counts.stamp.json"
 
-#: Columns of the panel, in order — exactly what :meth:`Universe.counts` returns, keyed by RIC.
-COLUMNS: Final = ("ric", "day", "positive", "neutral", "negative", "uncharacterised")
+#: Columns of the panel, in order. Keyed by the ``yukka_id`` the store files snippets under,
+#: as the price feed is: a caller asking for another identifier gets it relabelled point in time
+#: at read time, so one stored panel serves every key.
+COLUMNS: Final = ("entity", "day", "positive", "neutral", "negative", "uncharacterised")
 
 
 class StalePanelError(RuntimeError):
@@ -103,9 +105,14 @@ def write_counts(universe: pl.DataFrame | None = None, *, bucket: str = BUCKET) 
     Raises:
         NoSnippetsError: If the store holds no file for any company in the universe.
     """
-    from novetly_score.panel import counts
+    from novetly_score.data.snippets import data
 
-    panel = counts(universe=universe)
+    frame = universe
+    if frame is None:
+        from yukka.data import Index
+
+        frame = Index.STOXX600.frame
+    panel = data(frame).derive_counts()
     written = stamp()
     buffer = io.BytesIO()
     panel.write_parquet(buffer, compression="zstd")
@@ -121,10 +128,11 @@ def write_counts(universe: pl.DataFrame | None = None, *, bucket: str = BUCKET) 
     return {**written, "rows": panel.height, "bytes": len(body)}
 
 
-def read_counts(*, check: bool = True, bucket: str = BUCKET) -> pl.DataFrame:
-    """Read the materialised counts panel, refusing one the store has outgrown.
+def read_panel(*, check: bool = True, bucket: str = BUCKET) -> pl.DataFrame:
+    """Read the stored counts panel, refusing one the store has outgrown.
 
-        >>> tone = read_counts()                                # doctest: +SKIP
+    Reached through :meth:`novetly_score.data.Universe.counts`, which narrows it to a span and a
+    universe and keys it; this is the whole panel, keyed by ``yukka_id``.
 
     Args:
         check: Compare the panel's stamp against the live manifest and refuse a mismatch. Turn it
@@ -132,7 +140,7 @@ def read_counts(*, check: bool = True, bucket: str = BUCKET) -> pl.DataFrame:
         bucket: Bucket to read from.
 
     Returns:
-        :data:`COLUMNS` — the same frame :func:`novetly_score.panel.counts` returns, in one read.
+        :data:`COLUMNS` — the same frame :meth:`Universe.derive_counts` produces, in one read.
 
     Raises:
         StalePanelError: If *check* is on and the store has changed since the panel was written,

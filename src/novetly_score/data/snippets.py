@@ -944,9 +944,66 @@ class Universe:
         *,
         key: str | None = None,
     ) -> pl.DataFrame:
-        """Read the daily article counts for these assets over a span, and return them.
+        """Read the stored counts panel for these assets over a span, and return it.
 
             >>> data(Index.STOXX600.frame).counts("2025-01", "2025-06", key="ric")   # doctest: +SKIP
+
+        The companion to :meth:`prices`, and deliberately the same call: the span is the
+        argument, the frame is the answer, either end left open runs to the edge of what is held,
+        and *key* relabels the panel point in time.
+
+        The panel is read, not aggregated. :meth:`derive_counts` is the aggregation over 181M
+        snippet rows that produces it, run once by
+        :func:`novetly_score.data.panels.write_counts`; this is one small object off the store.
+        A panel older than the store it was derived from is refused rather than served short --
+        see :mod:`novetly_score.data.panels`.
+
+        Args:
+            start_date: Earliest month or day to include: ``"2025-01"``, ``"2025-01-15"`` or a
+                :class:`datetime.date`. ``None`` for the panel's earliest.
+            end_date: Latest, included, in the same three shapes. ``None`` for its latest, so
+                ``counts("2025-01")`` is 2025-01 onwards and ``counts()`` is everything.
+            key: An identifier column of the universe frame to key the panel by instead of the
+                ``yukka_id``, e.g. ``"ric"``. Needs the assets to have come in as a frame.
+
+        Returns:
+            One row per company and day: ``entity`` (or *key*), ``day``, ``positive``,
+            ``neutral``, ``negative``, ``uncharacterised``.
+
+        Raises:
+            StalePanelError: If no panel has been stored, or the store has moved since it was.
+            ValueError: If a span end is malformed, the span runs backwards, or *key* is not a
+                column of the universe frame.
+        """
+        import polars as pl
+
+        from novetly_score.data.panels import read_panel
+
+        first, last = _span_days(start_date, end_date, "counts")
+        panel = read_panel().filter(pl.col("entity").is_in([COMPANY_PREFIX + name for name in self._names]))
+        if first is not None:
+            panel = panel.filter(pl.col("day") >= first)
+        if last is not None:
+            panel = panel.filter(pl.col("day") <= last)
+        if key is None:
+            return panel
+        return as_of(panel, self._frame, key, on="day")
+
+    def derive_counts(
+        self,
+        start_date: str | date | None = None,
+        end_date: str | date | None = None,
+        *,
+        key: str | None = None,
+    ) -> pl.DataFrame:
+        """Aggregate the daily article counts for these assets out of the snippets themselves.
+
+            >>> data(Index.STOXX600.frame).derive_counts("2025-01", "2025-06")   # doctest: +SKIP
+
+        **The expensive path, and not the one to reach for.** The whole STOXX 600 is 181M snippet
+        rows across 18,183 files, which is minutes of reading even though the aggregation runs in
+        the store's engine. :meth:`counts` reads the panel this produces, stored once by
+        :func:`novetly_score.data.panels.write_counts`, and is the call a caller wants.
 
         Unlike the rest of the layer this one *runs*: the span is the narrowing, so there is
         nothing left to describe. :attr:`Snippets.counts` is the same panel as a value that can
@@ -1154,6 +1211,38 @@ def _month_end(month: str) -> date:
     """
     following = _shift_month(month, 1)
     return date.fromisoformat(f"{following}-01") - timedelta(days=1)
+
+
+def _span_days(
+    start_date: str | date | None,
+    end_date: str | date | None,
+    caller: str,
+) -> tuple[date | None, date | None]:
+    """Resolve a span to the inclusive first and last **day** it covers, or ``None`` for open.
+
+    The three shapes the rest of the layer takes -- a month, a day, or a :class:`datetime.date`
+    -- where a month means all of it: as a start its first day, as an end its last.
+
+    Args:
+        start_date: Earliest month or day, or ``None`` to leave the start open.
+        end_date: Latest month or day, included, or ``None`` to leave the end open.
+        caller: Name to quote in an error message.
+
+    Returns:
+        ``(first, last)``, either of which may be ``None``.
+
+    Raises:
+        ValueError: If an end is neither ``YYYY-MM`` nor ``YYYY-MM-DD``, or the span runs
+            backwards.
+    """
+    first_month, first_day = _span_end(start_date, "start_date")
+    last_month, last_day = _span_end(end_date, "end_date")
+    first = first_day or (date.fromisoformat(f"{first_month}-01") if first_month else None)
+    last = last_day or (_month_end(last_month) if last_month else None)
+    if first is not None and last is not None and last < first:
+        msg = f"{caller}({start_date!r}, {end_date!r}) runs backwards"
+        raise ValueError(msg)
+    return first, last
 
 
 def _shift_month(month: str, delta: int) -> str:

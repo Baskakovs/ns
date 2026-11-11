@@ -14,7 +14,7 @@ def _():
     from yukka.data import Index
 
     from novetly_score.align import entry_day, pit_members, tradable, trading_days, wide
-    from novetly_score.data import data, read_counts
+    from novetly_score.data import data
     from novetly_score.panel import sentiment
 
     return (
@@ -28,7 +28,6 @@ def _():
         np,
         pit_members,
         pl,
-        read_counts,
         sentiment,
         tradable,
         trading_days,
@@ -50,6 +49,14 @@ def _(mo):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Data definition and import
+    """)
+    return
+
+
 @app.cell
 def _():
     signals = ("positive", "neutral", "negative", "sentiment")
@@ -66,11 +73,11 @@ def _(Index, data):
 
 
 @app.cell
-def _(read_counts):
+def _(store):
     # Materialised in the store: one 1.3 MB object, not the aggregation over 181M snippet rows
     # that produced it. Rebuild with write_counts() when the store gains a month; read_counts()
     # refuses a panel the store has outgrown.
-    tone = read_counts()
+    tone = store.counts(key="ric")
     return (tone,)
 
 

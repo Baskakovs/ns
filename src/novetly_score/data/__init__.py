@@ -16,7 +16,7 @@ from novetly_score.data.panels import (
     COUNTS_KEY,
     STAMP_KEY,
     StalePanelError,
-    read_counts,
+    read_panel,
     stamp,
     write_counts,
 )
@@ -50,7 +50,7 @@ __all__ = [
     "entities",
     "entity",
     "identifier_history",
-    "read_counts",
+    "read_panel",
     "stamp",
     "write_counts",
 ]

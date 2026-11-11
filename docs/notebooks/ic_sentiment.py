@@ -13,7 +13,7 @@ def _():
     from yukka.data import Index
 
     from novetly_score.align import entry_day, pit_members, tradable, trading_days, wide
-    from novetly_score.data import data, read_counts
+    from novetly_score.data import data
     from novetly_score.panel import sentiment
 
     return (
@@ -26,7 +26,6 @@ def _():
         np,
         pit_members,
         pl,
-        read_counts,
         sentiment,
         tradable,
         trading_days,
@@ -47,7 +46,7 @@ def _(mo):
         Three choices this rests on:
 
         - **Point in time throughout.** Every symbol is the one the company held on the day in
-          question — `read_counts()` and `store.prices(key="ric")` key by `as_of`, and the
+          question — `store.counts(key="ric")` and `store.prices(key="ric")` key by `as_of`, and the
           membership mask uses `membership_history.ric`, not `ric_current`. Each day's
           cross-section is the 600 names the index held that day.
         - **No look-ahead.** A day's articles are complete only at the end of that UTC day, which
@@ -70,12 +69,12 @@ def _():
 
 
 @app.cell
-def _(Index, data, read_counts):
-    # The counts are materialised in the store: one 1.3 MB object, not the aggregation over 181M
-    # snippet rows that produced it. read_counts() refuses a panel the store has outgrown.
+def _(Index, data):
+    # counts and prices are now the same call: span and key are the arguments. The counts panel
+    # is read from the store rather than aggregated per caller -- see novetly_score.data.panels.
     store = data(Index.STOXX600.frame)
     membership = Index.STOXX600.membership_history
-    tone = read_counts()
+    tone = store.counts(key="ric")
     levels = store.prices("2024-07", key="ric")
     return levels, membership, store, tone
 

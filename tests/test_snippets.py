@@ -641,30 +641,30 @@ class TestRelabellingIsAsOfTheDay:
 
 
 class TestTheUniverseReadsTheCounts:
-    """`data(assets).counts(start, end)` — the span is the argument, and the frame is the answer."""
+    """`data(assets).derive_counts(start, end)` — the span is the argument, and the frame is the answer."""
 
     def test_a_span_of_months(self, env):
         """The headline call: two months in, one panel out."""
-        frame = data(UNIVERSE).counts("2024-07", "2024-08")
+        frame = data(UNIVERSE).derive_counts("2024-07", "2024-08")
         assert frame.columns == ["entity", "day", "positive", "neutral", "negative", "uncharacterised"]
         assert frame.get_column("entity").n_unique() == 2
 
     def test_an_open_end_runs_to_the_store(self, env):
         """A span with one end given runs to the edge of what the store holds, not to the other end."""
-        onwards = data(UNIVERSE).counts("2024-08")
-        assert onwards.equals(data(UNIVERSE).counts("2024-08", "2024-09"))
-        assert onwards.height > data(UNIVERSE).counts("2024-08", "2024-08").height
+        onwards = data(UNIVERSE).derive_counts("2024-08")
+        assert onwards.equals(data(UNIVERSE).derive_counts("2024-08", "2024-09"))
+        assert onwards.height > data(UNIVERSE).derive_counts("2024-08", "2024-08").height
 
     def test_an_open_start_runs_from_the_store(self, env):
         """The same on the other side, so end_date alone is a span and not an empty one."""
-        until = data(UNIVERSE).counts(end_date="2024-08")
-        assert until.equals(data(UNIVERSE).counts("2024-07", "2024-08"))
+        until = data(UNIVERSE).derive_counts(end_date="2024-08")
+        assert until.equals(data(UNIVERSE).derive_counts("2024-07", "2024-08"))
 
     def test_no_arguments_is_every_month(self, env):
         """Both ends open is everything, which is the whole fixture store."""
-        everything = data(UNIVERSE).counts()
-        assert everything.equals(data(UNIVERSE).counts("2024-07", "2024-09"))
-        assert everything.height > data(UNIVERSE).counts("2024-08").height
+        everything = data(UNIVERSE).derive_counts()
+        assert everything.equals(data(UNIVERSE).derive_counts("2024-07", "2024-09"))
+        assert everything.height > data(UNIVERSE).derive_counts("2024-08").height
 
     def test_a_day_trims_the_span(self, env):
         """A caller who thinks in dates gets the days asked for, not the months they fall in.
@@ -672,25 +672,25 @@ class TestTheUniverseReadsTheCounts:
         The days are read off the panel rather than written down: a month's files hold whatever
         UTC days their articles fall on, which near a month boundary is not only that month.
         """
-        month = data(UNIVERSE).counts("2024-07")
+        month = data(UNIVERSE).derive_counts("2024-07")
         days = month.get_column("day").unique().sort().to_list()
         assert len(days) > 1, "the fixture month has to span two days for trimming to show"
-        trimmed = data(UNIVERSE).counts(days[-1], days[-1])
+        trimmed = data(UNIVERSE).derive_counts(days[-1], days[-1])
         assert trimmed.height > 0
         assert trimmed.get_column("day").unique().to_list() == [days[-1]]
         assert trimmed.height < month.height, "the month is read whole and trimmed, not read short"
 
     def test_a_day_as_an_open_start_trims_from_that_day(self, env):
         """A day on its own is a start, not a single day: it runs on to the store's latest."""
-        days = data(UNIVERSE).counts().get_column("day").unique().sort().to_list()
-        onwards = data(UNIVERSE).counts(days[1])
+        days = data(UNIVERSE).derive_counts().get_column("day").unique().sort().to_list()
+        onwards = data(UNIVERSE).derive_counts(days[1])
         assert onwards.get_column("day").min() == days[1]
         assert onwards.get_column("day").max() == days[-1]
 
     def test_a_date_object_is_a_span_end(self, env):
         """A caller holding dates should not have to format them first."""
-        day = data(UNIVERSE).counts("2024-07").get_column("day").max()
-        assert data(UNIVERSE).counts(day).equals(data(UNIVERSE).counts(day.isoformat()))
+        day = data(UNIVERSE).derive_counts("2024-07").get_column("day").max()
+        assert data(UNIVERSE).derive_counts(day).equals(data(UNIVERSE).derive_counts(day.isoformat()))
 
     def test_a_day_is_found_in_whichever_file_holds_it(self, env):
         """The files are not UTC-day aligned, so a day query reads one month either side.
@@ -698,36 +698,37 @@ class TestTheUniverseReadsTheCounts:
         The fixture's earliest day sits in a file whose month it is not — exactly the case the
         real store shows at every month boundary. Without the padding this reads nothing.
         """
-        day = data(UNIVERSE).counts("2024-07").get_column("day").min()
-        found = data(UNIVERSE).counts(day, day)
+        day = data(UNIVERSE).derive_counts("2024-07").get_column("day").min()
+        found = data(UNIVERSE).derive_counts(day, day)
         assert found.height > 0, "a day must not be missed because a neighbouring file holds it"
         assert found.get_column("day").unique().to_list() == [day]
 
     def test_a_backwards_day_span_is_refused(self, env):
         """Backwards is backwards whether the ends are months or days."""
         with pytest.raises(ValueError, match="runs backwards"):
-            data(UNIVERSE).counts("2024-08-02", "2024-08-01")
+            data(UNIVERSE).derive_counts("2024-08-02", "2024-08-01")
 
     def test_a_span_end_that_is_neither_shape_is_refused(self, env):
         """The message has to name both shapes, because either one is reasonable to try."""
         with pytest.raises(ValueError, match="not YYYY-MM or YYYY-MM-DD"):
-            data(UNIVERSE).counts("July 2024")
+            data(UNIVERSE).derive_counts("July 2024")
 
     def test_a_backwards_span_is_refused(self, env):
         """The read's own check, which still applies when the span arrives as two arguments."""
         with pytest.raises(ValueError, match="runs backwards"):
-            data(UNIVERSE).counts("2024-09", "2024-07")
+            data(UNIVERSE).derive_counts("2024-09", "2024-07")
 
     def test_the_panel_can_be_keyed_by_a_ric(self, env):
         """What a price panel is keyed by, so the two join without a bridge per caller."""
-        frame = data(UNIVERSE).counts("2024-07", "2024-09", key="ric")
+        frame = data(UNIVERSE).derive_counts("2024-07", "2024-09", key="ric")
         assert frame.columns[0] == "ric"
         assert set(frame.get_column("ric")) == {"BMWG.L", "BMWG.DE", "SAPG.DE"}
 
     def test_the_key_is_the_one_held_on_the_day(self, env):
         """The bmw line changes on 2024-08-02, and the panel has to change with it."""
         changed = date(2024, 8, 2)  # the day UNIVERSE moves bmw onto its new line
-        frame = data(UNIVERSE).counts("2024-07", "2024-09", key="ric").filter(pl.col("ric").str.starts_with("BMWG"))
+        panel = data(UNIVERSE).derive_counts("2024-07", "2024-09", key="ric")
+        frame = panel.filter(pl.col("ric").str.starts_with("BMWG"))
         before = frame.filter(pl.col("day") < changed)
         after = frame.filter(pl.col("day") >= changed)
         assert before.height > 0, "the fixture has to have days before the change"
@@ -738,32 +739,32 @@ class TestTheUniverseReadsTheCounts:
     def test_keying_keeps_the_counts_intact(self, env):
         """Relabelling is a rename of the key, not an aggregation: every row has to survive it."""
         order = ["day", "positive", "neutral", "negative", "uncharacterised"]
-        plain = data(UNIVERSE).counts("2024-07", "2024-09").drop("entity").sort(order)
-        keyed = data(UNIVERSE).counts("2024-07", "2024-09", key="ric").drop("ric").sort(order)
+        plain = data(UNIVERSE).derive_counts("2024-07", "2024-09").drop("entity").sort(order)
+        keyed = data(UNIVERSE).derive_counts("2024-07", "2024-09", key="ric").drop("ric").sort(order)
         assert keyed.equals(plain)
 
     def test_a_line_the_company_has_left_is_not_used_after_it_left(self, env):
         """The sap line moved off SAPG.OLD in 2020, long before the store's history starts."""
-        assert "SAPG.OLD" not in data(UNIVERSE).counts("2024-07", key="ric").get_column("ric").to_list()
+        assert "SAPG.OLD" not in data(UNIVERSE).derive_counts("2024-07", key="ric").get_column("ric").to_list()
 
     def test_ids_alone_cannot_be_keyed(self, env):
         """The store knows no RICs, so the frame is the only thing that could answer — say so."""
         with pytest.raises(ValueError, match="needs the universe frame"):
-            data("company:bmw").counts("2024-07", key="ric")
+            data("company:bmw").derive_counts("2024-07", key="ric")
 
     def test_an_unknown_key_fails_before_the_read(self, env):
         """A typo must not cost a read of the store first."""
         with pytest.raises(ValueError, match="no isin column"):
-            data(UNIVERSE).counts("2024-07", key="isin")
+            data(UNIVERSE).derive_counts("2024-07", key="isin")
 
     def test_an_empty_span_says_why(self, env):
         """A panel of nothing is as indistinguishable from a quiet company as a frame of nothing."""
         with pytest.raises(NoSnippetsError, match="no snippets at all"):
-            data(f"company:{UNCOVERED}").counts("2024-07")
+            data(f"company:{UNCOVERED}").derive_counts("2024-07")
 
     def test_the_value_form_is_the_same_panel(self, env):
         """Snippets.counts is the same reduction, so over the same span the two must agree."""
-        method = data(UNIVERSE).counts("2024-07", "2024-07")
+        method = data(UNIVERSE).derive_counts("2024-07", "2024-07")
         assert method.equals(data(UNIVERSE).snippets.months("2024-07").counts.frame)
 
     def test_the_two_forms_read_an_omitted_end_differently(self, env):
@@ -773,7 +774,8 @@ class TestTheUniverseReadsTheCounts:
         wants. counts("2024-07") is 2024-07 onwards, because a span's open end is the store's
         edge. Both are documented; this is here so neither drifts into the other silently.
         """
-        assert data(UNIVERSE).counts("2024-07").height > data(UNIVERSE).snippets.months("2024-07").counts.frame.height
+        padded = data(UNIVERSE).derive_counts("2024-07").height
+        assert padded > data(UNIVERSE).snippets.months("2024-07").counts.frame.height
 
 
 class TestCountsReduceSnippetsToArticles:

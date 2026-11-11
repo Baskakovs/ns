@@ -10,9 +10,10 @@
     data(Index.STOXX600.frame).counts(start_date, end_date, key="ric")
 
 and the only thing it adds is the universe, which that call cannot know: the STOXX 600 is a YUKKA
-call and a token. The counting, the span and the PIT RIC keying are all the layer's, so there is
+call and a token. The span, the PIT RIC keying and the reading are all the layer's, so there is
 one definition of each — see :meth:`novetly_score.data.Universe.counts` and
-:func:`novetly_score.data.as_of`.
+:func:`novetly_score.data.as_of`. That call reads a panel stored once rather than aggregating
+per caller; :meth:`~novetly_score.data.Universe.derive_counts` is the aggregation behind it.
 
 **One naming convention, and it is the store's.** A panel is keyed ``(ric, day)`` and its counts
 are ``positive``, ``neutral``, ``negative`` — the names the aggregation over the parquet produces.
@@ -71,7 +72,8 @@ def counts(
         no articles and no coverage are not the same thing.
 
     Raises:
-        NoSnippetsError: If the span selects no file for any company in the universe.
+        StalePanelError: If no counts panel has been stored, or the store has moved since it was
+            — see :func:`novetly_score.data.panels.write_counts`.
     """
     frame = Index.STOXX600.frame if universe is None else universe
     return data(frame).counts(start_date, end_date, key="ric")
