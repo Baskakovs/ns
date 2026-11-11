@@ -42,9 +42,10 @@ def _(mo):
     # IC baseline: tone counts and the sentiment ratio, 1–22 days
 
     Cross-sectional rank IC of `positive`, `neutral`, `negative` and `sentiment` against forward
-    returns over the PIT STOXX 600, from `basanos`. Signals are raw — no z-scoring. Only cells
-    whose value is `>= 0` enter a cross-section, so a company-day with no articles is absent
-    rather than counted as a zero.
+    returns over the **PIT top 200** of the STOXX 600 — each day's cross-section is the largest
+    200 names the index held that day, by that review's own ranking — from `basanos`. Signals
+    are raw, with no z-scoring. Only cells whose value is `>= 0` enter a cross-section, so a
+    company-day the store has no article for is absent rather than counted as a zero.
     """)
     return
 
@@ -92,7 +93,7 @@ def _(
     days = trading_days(levels, tone["day"].min(), tone["day"].max())
     news = entry_day(tone, days)
     panel = news.join(sentiment(news), on=["ric", "day"]).join(
-        pit_members(membership, days), on=["ric", "day"], how="inner"
+        pit_members(membership, days, top=200), on=["ric", "day"], how="inner"
     )
     return days, panel
 
@@ -137,15 +138,24 @@ def _(
         h: (prices if h == 1 else prices.with_columns([pl.col(a).shift(-(h - 1)) for a in assets])) for h in horizons
     }
 
-    def curve(signal):
+    def curve(signal, *, nonzero=False):
         """Mean rank IC of one signal against the single day *h* ahead, at every horizon.
 
         Every point uses a one-day return, so the noise is the same across the axis and the
         slope is readable. Pairing the signal with the whole ``h``-day return instead would
         make any persistent signal look stronger at longer horizons whether or not it carries
         information, because drift accumulates like ``h`` while noise grows like ``sqrt(h)``.
+
+        Args:
+            signal: The column of *panel* to rank companies by.
+            nonzero: Rank only the company-days whose score is **> 0**, rather than every
+                company-day the store has an article for. For a count that drops the names
+                whose articles carried no tone of that sign; for the ratio it drops nothing,
+                the ratio being in (0, 1) always.
         """
-        mu = wide(panel.filter(pl.col(signal) >= 0), signal, days, assets)
+        scope = pl.col(signal) > 0 if nonzero else pl.col(signal) >= 0
+        mu = wide(panel.filter(scope), signal, days, assets)
+        breadth = float(np.isfinite(mu.drop("date").to_numpy()).sum(axis=1).mean())
         rows = []
         for h in horizons:
             series = BasanosEngine(prices=shifted[h], mu=mu, cfg=cfg).rank_ic(h=1)
@@ -157,12 +167,14 @@ def _(
                     "h": h,
                     "ic": float(values.mean()),
                     "t": float(values.mean() / values.std(ddof=1) * np.sqrt(len(values))),
+                    "names": breadth,
                 }
             )
         return rows
 
     table = pl.DataFrame([row for signal in signals for row in curve(signal)])
-    return (table,)
+    nonzero = pl.DataFrame([row for signal in signals for row in curve(signal, nonzero=True)])
+    return nonzero, table
 
 
 @app.cell
@@ -177,8 +189,11 @@ def _(go, pl, signals):
                 y=part.get_column("ic").to_list(),
                 name=signal,
                 mode="lines+markers",
-                customdata=part.get_column("t").to_list(),
-                hovertemplate="%{fullData.name}<br>h=%{x}<br>IC %{y:.4f}<br>t %{customdata:+.1f}<extra></extra>",
+                customdata=part.select("t", "names").rows(),
+                hovertemplate=(
+                    "%{fullData.name}<br>h=%{x}<br>IC %{y:.4f}"
+                    "<br>t %{customdata[0]:+.1f}<br>names/day %{customdata[1]:.0f}<extra></extra>"
+                ),
             )
         figure.add_hline(y=0, line_dash="dot", line_color="grey")
         figure.update_layout(
@@ -210,13 +225,39 @@ def _(mo):
 
 @app.cell
 def _(plot, table):
-    plot(table, "Marginal (one-day) rank IC, PIT STOXX 600")
+    plot(table, "Marginal (one-day) rank IC, PIT top 200")
     return
 
 
 @app.cell
-def _(pl, signals, table):
-    table.pivot(on="signal", index="h", values="ic").sort("h").with_columns(pl.col(list(signals)).round(5))
+def _(mo):
+    mo.md("""
+    ## The same, ranking only company-days whose score is **> 0**
+
+    Above, a company enters the cross-section on any day the store has an article for it, so a
+    name whose articles carried no tone of that sign is ranked at zero — tied with every other
+    such name. Here those names are dropped instead, which sharpens the ranking at the cost of
+    breadth; hover for the names/day each curve is built on. `sentiment` is unchanged by
+    construction, the ratio being in (0, 1) always — the meaningful filter for it is
+    `positive + negative > 0`.
+    """)
+    return
+
+
+@app.cell
+def _(nonzero, plot):
+    plot(nonzero, "Marginal rank IC, score > 0 only, PIT top 200")
+    return
+
+
+@app.cell
+def _(nonzero, pl, signals, table):
+    pl.concat(
+        [
+            frame.with_columns(scope=pl.lit(label)).pivot(on="signal", index=["scope", "h"], values="ic")
+            for label, frame in (("all", table), ("score > 0", nonzero))
+        ]
+    ).with_columns(pl.col(list(signals)).round(5))
     return
 
 
