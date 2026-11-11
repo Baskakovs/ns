@@ -148,12 +148,21 @@ def _(
 
         Args:
             signal: The column of *panel* to rank companies by.
-            nonzero: Rank only the company-days whose score is **> 0**, rather than every
-                company-day the store has an article for. For a count that drops the names
-                whose articles carried no tone of that sign; for the ratio it drops nothing,
-                the ratio being in (0, 1) always.
+            nonzero: Tighten the cross-section. For a count, rank only the company-days with
+                at least one article of that sign. For the ratio, rank only the company-days
+                carrying **both** polarities, rather than the merely-signed ones.
+
+        The ratio is never ranked on a company-day with no signed article at all. Such a day
+        scores exactly 0.5 by the prior, which is not neutral but the 14th percentile of the
+        cross-section -- news skews positive, so 0.5 sits near the bottom -- and ranking it
+        would read an absence of coverage as bad news.
         """
-        scope = pl.col(signal) > 0 if nonzero else pl.col(signal) >= 0
+        if signal == "sentiment":
+            signed = (pl.col("positive") + pl.col("negative")) > 0
+            both = (pl.col("positive") > 0) & (pl.col("negative") > 0)
+            scope = both if nonzero else signed
+        else:
+            scope = pl.col(signal) > 0 if nonzero else pl.col(signal) >= 0
         mu = wide(panel.filter(scope), signal, days, assets)
         breadth = float(np.isfinite(mu.drop("date").to_numpy()).sum(axis=1).mean())
         rows = []
@@ -237,9 +246,9 @@ def _(mo):
     Above, a company enters the cross-section on any day the store has an article for it, so a
     name whose articles carried no tone of that sign is ranked at zero — tied with every other
     such name. Here those names are dropped instead, which sharpens the ranking at the cost of
-    breadth; hover for the names/day each curve is built on. `sentiment` is unchanged by
-    construction, the ratio being in (0, 1) always — the meaningful filter for it is
-    `positive + negative > 0`.
+    breadth; hover for the names/day each curve is built on. For `sentiment` the tightening is
+    `positive > 0 and negative > 0` — both polarities present, rather than merely one signed
+    article — since a one-sided ratio is pinned near an extreme by a single article.
     """)
     return
 
@@ -277,7 +286,7 @@ def _(mo):
 @app.cell
 def _(assets, panel, pl):
     ranked = (
-        panel.filter(pl.col("ric").is_in(assets))
+        panel.filter(pl.col("ric").is_in(assets) & ((pl.col("positive") + pl.col("negative")) > 0))
         .with_columns(depth=pl.col("positive") + pl.col("negative"))
         .with_columns(
             rank=pl.col("sentiment").rank(method="average").over("day"),
