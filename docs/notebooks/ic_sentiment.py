@@ -12,19 +12,25 @@ def _():
     from basanos.math import BasanosConfig, BasanosEngine
     from yukka.data import Index
 
-    from novetly_score.data import data
-    from novetly_score.panel import counts, sentiment
+    from novetly_score.align import entry_day, pit_members, tradable, trading_days, wide
+    from novetly_score.data import data, read_counts
+    from novetly_score.panel import sentiment
 
     return (
         BasanosConfig,
         BasanosEngine,
         Index,
-        counts,
         data,
+        entry_day,
         mo,
         np,
+        pit_members,
         pl,
+        read_counts,
         sentiment,
+        tradable,
+        trading_days,
+        wide,
     )
 
 
@@ -34,14 +40,14 @@ def _(mo):
         """
         # IC of the tone counts and the sentiment ratio
 
-        Cross-sectional information coefficient of four signals — `pos`, `neu`, `neg` and
-        `sentiment` — against 1- to 10-day forward total returns, over the STOXX 600 as it was
+        Cross-sectional information coefficient of four signals — `positive`, `neutral`,
+        `negative` and `sentiment` — against 1- to 10-day forward total returns, over the STOXX 600 as it was
         actually composed. The IC itself is `basanos`: `BasanosEngine.ic` and `.rank_ic`.
 
         Three choices this rests on:
 
         - **Point in time throughout.** Every symbol is the one the company held on the day in
-          question — `counts(key="ric")` and `prices(key="ric")` key by `as_of`, and the
+          question — `read_counts()` and `store.prices(key="ric")` key by `as_of`, and the
           membership mask uses `membership_history.ric`, not `ric_current`. Each day's
           cross-section is the 600 names the index held that day.
         - **No look-ahead.** A day's articles are complete only at the end of that UTC day, which
@@ -58,129 +64,36 @@ def _(mo):
 
 @app.cell
 def _():
-    signals = ("pos", "neu", "neg", "sentiment")
+    signals = ("positive", "neutral", "negative", "sentiment")
     horizons = tuple(range(1, 11))
     return horizons, signals
 
 
 @app.cell
-def _(pl):
-    def trading_days(prices, first, last):
-        """The dates the price feed quotes in ``[first, last]``, which become the panel's rows.
-
-        basanos reads a horizon as a row offset, so the row grid has to be trading days for
-        ``h`` to mean trading days.
-        """
-        return prices.filter(pl.col("date").is_between(first, last)).get_column("date").unique().sort()
-
-    def entry_day(counts_frame, days):
-        """Re-date each company-day of news to the first trading day strictly after it.
-
-        Returns the counts summed over the calendar days that feed each trading day, so a
-        Monday row holds Friday's, Saturday's and Sunday's articles. Every calendar day is used
-        exactly once, and none is used before it was published.
-        """
-        calendar = pl.DataFrame({"news": pl.date_range(days.min(), days.max(), eager=True)})
-        mapping = (
-            calendar.with_columns(after=pl.col("news").dt.offset_by("1d"))
-            .sort("after")
-            .join_asof(
-                pl.DataFrame({"date": days}).sort("date"),
-                left_on="after",
-                right_on="date",
-                strategy="forward",
-            )
-            .select("news", "date")
-            .drop_nulls("date")
-        )
-        return (
-            counts_frame.join(mapping, left_on="date", right_on="news", suffix="_entry")
-            .group_by("date_entry", "ric")
-            .agg(pl.col("pos", "neu", "neg").sum())
-            .rename({"date_entry": "date"})
-        )
-
-    def pit_mask(membership, days):
-        """The ``(date, ric)`` pairs the index actually held, in each day's own symbols.
-
-        Membership changes at quarterly reviews, so a day takes the composition of the latest
-        review on or before it.
-        """
-        reviews = membership.filter(pl.col("is_member")).select("effective_date", "ric").unique()
-        return (
-            pl.DataFrame({"date": days})
-            .sort("date")
-            .join_asof(
-                reviews.select("effective_date").unique().sort("effective_date"),
-                left_on="date",
-                right_on="effective_date",
-                strategy="backward",
-            )
-            .drop_nulls("effective_date")
-            .join(reviews, on="effective_date")
-            .select("date", "ric")
-        )
-
-    def wide(frame, value, days, rics):
-        """``date`` plus one float column per RIC, on exactly *days* and *rics*.
-
-        basanos wants prices and signals as matched wide frames; a RIC with nothing on a day is
-        null, which is what excludes it from that day's cross-section.
-        """
-        pivot = frame.select("date", "ric", value).pivot(on="ric", index="date", values=value)
-        absent = [ric for ric in rics if ric not in pivot.columns]
-        return (
-            pl.DataFrame({"date": days})
-            .join(pivot, on="date", how="left")
-            .with_columns([pl.lit(None, dtype=pl.Float64).alias(ric) for ric in absent])
-            .select(["date", *rics])
-            .with_columns(pl.col(rics).cast(pl.Float64))
-        )
-
-    def eligible(prices_wide, rics):
-        """The RICs whose price column basanos will accept: positive, varying, mostly present.
-
-        Its validators reject a non-positive price, a series that only ever moves one way, and a
-        column more than ``max_nan_fraction`` null. Half a window of quotes is the bar here.
-        """
-        keep = []
-        for ric in rics:
-            column = prices_wide.get_column(ric)
-            quoted = column.drop_nulls()
-            if quoted.len() < 3 or quoted.min() <= 0 or column.null_count() / prices_wide.height > 0.5:
-                continue
-            steps = quoted.diff().drop_nulls()
-            if (steps >= 0).all() or (steps <= 0).all():
-                continue
-            keep.append(ric)
-        return keep
-
-    return eligible, entry_day, pit_mask, trading_days, wide
-
-
-@app.cell
-def _(Index, counts, data):
-    universe = Index.STOXX600.frame
+def _(Index, data, read_counts):
+    # The counts are materialised in the store: one 1.3 MB object, not the aggregation over 181M
+    # snippet rows that produced it. read_counts() refuses a panel the store has outgrown.
+    store = data(Index.STOXX600.frame)
     membership = Index.STOXX600.membership_history
-    tone = counts(universe=universe)
-    levels = data(universe).prices(key="ric")
-    return levels, membership, tone
+    tone = read_counts()
+    levels = store.prices("2024-07", key="ric")
+    return levels, membership, store, tone
 
 
 @app.cell
-def _(entry_day, levels, membership, pit_mask, sentiment, tone, trading_days):
-    days = trading_days(levels, tone["date"].min(), tone["date"].max())
+def _(entry_day, levels, membership, pit_members, sentiment, tone, trading_days):
+    days = trading_days(levels, tone["day"].min(), tone["day"].max())
     news = entry_day(tone, days)
-    scored = news.join(sentiment(news), on=["date", "ric"])
-    panel = scored.join(pit_mask(membership, days), on=["date", "ric"], how="inner")
+    scored = news.join(sentiment(news), on=["ric", "day"])
+    panel = scored.join(pit_members(membership, days), on=["ric", "day"], how="inner")
     return days, news, panel, scored
 
 
 @app.cell
-def _(days, eligible, levels, panel, pl, signals, wide):
+def _(days, levels, panel, pl, signals, tradable, wide):
     candidates = sorted(set(panel.get_column("ric")) & set(levels.get_column("ric")))
     prices_all = wide(levels, "close_price", days, candidates)
-    assets = eligible(prices_all, candidates)
+    assets = tradable(prices_all, candidates)
     prices_wide = prices_all.select(["date", *assets])
     signals_wide = {signal: wide(panel, signal, days, assets) for signal in signals}
 

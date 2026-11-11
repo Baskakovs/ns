@@ -47,9 +47,12 @@ ADJUSTMENTS: Final = ("net", "gross", "raw")
 #: open-ended span, so ``prices()`` with no start is the feed's whole history rather than an error.
 HISTORY_START: Final = date(2015, 10, 13)
 
-#: Columns of the panel, in order. ``date`` is a trading date, where the counts' ``day`` is a
-#: publication day — join them on ``(entity, day) == (entity, date)``.
-COLUMNS: Final = ("entity", "date", "close_price")
+#: Columns of the panel, in order. ``day`` is the **trading** day here and the **publication**
+#: day in the counts, which is the one thing to keep in mind when joining them — but it is the
+#: same column name in both, so ``(entity, day)`` is the key for either panel and for the join.
+#: The feed calls it ``date``; :func:`keyed` renames it before returning, so the store's naming
+#: is the only one a caller sees.
+COLUMNS: Final = ("entity", "day", "close_price")
 
 
 def window(start_date: str | date | None, end_date: str | date | None) -> tuple[date, date]:
@@ -128,7 +131,7 @@ def keyed(levels: pl.DataFrame, universe: pl.DataFrame, *, key: str | None = Non
             ``yukka_id`` the store files snippets under.
 
     Returns:
-        ``entity`` (or *key*), ``date``, ``close_price``, sorted by both keys, one row per key and
+        ``entity`` (or *key*), ``day``, ``close_price``, sorted by both keys, one row per key and
         day. A RIC the universe does not name is absent, as is a line the company no longer
         trades on: it belongs to no company this panel is about, or to a company already answered
         for by its current line.
@@ -151,9 +154,9 @@ def keyed(levels: pl.DataFrame, universe: pl.DataFrame, *, key: str | None = Non
     current = history.group_by("yukka_id", maintain_order=True).agg(pl.col("ric").last())
     panel = (
         levels.join(current, on="ric", how="inner")
-        .select("date", "close_price", entity="yukka_id")
-        .select("entity", "date", "close_price")
+        .select("close_price", entity="yukka_id", day="date")
+        .select("entity", "day", "close_price")
     )
     if key is None:
-        return panel.sort("entity", "date")
-    return as_of(panel, universe, key, on="date")
+        return panel.sort("entity", "day")
+    return as_of(panel, universe, key, on="day")

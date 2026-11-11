@@ -1,21 +1,29 @@
-"""The STOXX 600's tone counts keyed by RIC, and the ratio they reduce to.
+"""The STOXX 600's tone counts, and the ratio they reduce to.
 
     from novetly_score.panel import counts, sentiment
 
     frame = counts("2025-01", "2025-06")
     score = sentiment(frame)
 
-Everything here is convenience over one call in the data layer::
+:func:`counts` is convenience over one call in the data layer::
 
     data(Index.STOXX600.frame).counts(start_date, end_date, key="ric")
 
-What this module adds is the two things that call cannot know: which universe (the STOXX 600,
-which is a YUKKA call and a token) and what to call the columns. The counting, the span and the
-PIT RIC keying are all the layer's, so there is one definition of each — see
-:meth:`novetly_score.data.Universe.counts` and :func:`novetly_score.data.as_of`.
+and the only thing it adds is the universe, which that call cannot know: the STOXX 600 is a YUKKA
+call and a token. The counting, the span and the PIT RIC keying are all the layer's, so there is
+one definition of each — see :meth:`novetly_score.data.Universe.counts` and
+:func:`novetly_score.data.as_of`.
 
-:func:`sentiment` is the one expression this module owns rather than delegates. It is kept out
-of the data layer on purpose: the layer counts, and a count is a fact about the store, while the
+**One naming convention, and it is the store's.** A panel is keyed ``(ric, day)`` and its counts
+are ``positive``, ``neutral``, ``negative`` — the names the aggregation over the parquet produces.
+Nothing here renames them: a 472k-row panel is not worth a relabelling pass, and a second set of
+names for the same numbers is worth even less. Where a feed disagrees it is corrected at the
+source rather than here — the price snapshot calls the day ``date``, and
+:func:`novetly_score.data.prices.keyed` renames it to ``day`` before returning, so both panels
+reach a caller keyed alike.
+
+:func:`sentiment` is the one expression this module owns rather than delegates. It is kept out of
+the data layer on purpose: the layer counts, and a count is a fact about the store, while the
 ratio is the experiment's choice of how to read those counts.
 """
 
@@ -28,11 +36,11 @@ from yukka.data import Index
 
 from novetly_score.data import data
 
-#: Columns of the panel, in order.
-COLUMNS = ("date", "ric", "pos", "neu", "neg")
+#: Columns of the counts panel, in order — the data layer's own, unrenamed.
+COLUMNS = ("ric", "day", "positive", "neutral", "negative", "uncharacterised")
 
 #: Columns of the sentiment frame, in order.
-SENTIMENT_COLUMNS = ("date", "ric", "sentiment")
+SENTIMENT_COLUMNS = ("ric", "day", "sentiment")
 
 
 def counts(
@@ -45,8 +53,9 @@ def counts(
 
     A count counts **articles**, not snippets: an article calling one company positive three
     times is positive once, and an article whose snippets carry no sentiment has no tone and is
-    in none of the three columns. The day is the UTC day of publication. Those rules belong to
-    :class:`novetly_score.data.Counts`, which does the counting.
+    counted as ``uncharacterised`` rather than folded into ``neutral``. The day is the UTC day of
+    publication. Those rules belong to :class:`novetly_score.data.Counts`, which does the
+    counting.
 
     Args:
         start_date: Earliest month or day: ``"2025-01"``, ``"2025-01-15"`` or a
@@ -57,16 +66,15 @@ def counts(
             network call to YUKKA and needs a token.
 
     Returns:
-        ``date``, ``ric``, ``pos``, ``neu``, ``neg``, sorted by date then RIC. A company the store
-        has no snippets for, or the universe has no RIC for, is absent rather than present and
-        zero — no articles and no coverage are not the same thing.
+        :data:`COLUMNS`, exactly as the data layer returns them. A company the store has no
+        snippets for, or the universe has no RIC for, is absent rather than present and zero —
+        no articles and no coverage are not the same thing.
 
     Raises:
         NoSnippetsError: If the span selects no file for any company in the universe.
     """
     frame = Index.STOXX600.frame if universe is None else universe
-    panel = data(frame).counts(start_date, end_date, key="ric")
-    return panel.select(date="day", ric="ric", pos="positive", neu="neutral", neg="negative").sort("date", "ric")
+    return data(frame).counts(start_date, end_date, key="ric")
 
 
 def sentiment(frame: pl.DataFrame) -> pl.DataFrame:
@@ -74,32 +82,32 @@ def sentiment(frame: pl.DataFrame) -> pl.DataFrame:
 
         >>> score = sentiment(counts("2025-01", "2025-06"))     # doctest: +SKIP
 
-    `P` and `N` are the ``pos`` and ``neg`` **article** counts of :func:`counts`. The ``+1`` and
-    ``+2`` are a Beta(1, 1) prior: a day with one positive article and nothing else scores 2/3
-    rather than 1, so a company with thin coverage is pulled towards 0.5 instead of to an
-    extreme. The denominator is therefore never zero and the result is always in (0, 1).
+    `P` and `N` are the ``positive`` and ``negative`` **article** counts. The ``+1`` and ``+2``
+    are a Beta(1, 1) prior: a day with one positive article and nothing else scores 2/3 rather
+    than 1, so a company with thin coverage is pulled towards 0.5 instead of to an extreme. The
+    denominator is therefore never zero and the result is always in (0, 1).
 
-    **``neu`` does not appear, and that is the definition, not an omission.** The ratio is over
-    the two signed tones only, so a day of ten neutral articles and a day of one neutral article
-    both score 0.5 — the same as a day with one positive and one negative. Neutral volume is
-    carried by :func:`counts`, where a caller who wants to weight by it can read it.
+    **``neutral`` does not appear, and that is the definition, not an omission.** The ratio is
+    over the two signed tones only, so a day of ten neutral articles and a day of one neutral
+    article both score 0.5 — the same as a day with one positive and one negative. Neutral volume
+    is carried by :func:`counts`, where a caller who wants to weight by it can read it.
 
     Args:
-        frame: A counts frame, as :func:`counts` returns. Needs ``date``, ``ric``, ``pos`` and
-            ``neg``; any other column, ``neu`` included, is ignored.
+        frame: A counts frame, as :func:`counts` returns. Needs ``ric``, ``day``, ``positive``
+            and ``negative``; any other column, ``neutral`` included, is ignored.
 
     Returns:
-        ``date``, ``ric``, ``sentiment``, sorted by date then RIC — one row per row of *frame*,
-        and so carrying its coverage exactly: a company and day absent from the counts is absent
-        here rather than scored 0.5. A row whose counts are null scores null.
+        :data:`SENTIMENT_COLUMNS`, one row per row of *frame* and in its order, and so carrying
+        its coverage exactly: a company and day absent from the counts is absent here rather than
+        scored 0.5. A row whose counts are null scores null.
 
     Raises:
-        ValueError: If *frame* is missing any of ``date``, ``ric``, ``pos`` or ``neg``.
+        ValueError: If *frame* is missing any of ``ric``, ``day``, ``positive`` or ``negative``.
     """
-    required = ("date", "ric", "pos", "neg")
+    required = ("ric", "day", "positive", "negative")
     missing = [column for column in required if column not in frame.columns]
     if missing:
         msg = f"counts frame is missing {', '.join(missing)}. Needs: {', '.join(required)}"
         raise ValueError(msg)
-    ratio = (pl.col("pos") + 1) / (pl.col("pos") + pl.col("neg") + 2)
-    return frame.select("date", "ric", sentiment=ratio.cast(pl.Float64)).sort("date", "ric")
+    ratio = (pl.col("positive") + 1) / (pl.col("positive") + pl.col("negative") + 2)
+    return frame.select("ric", "day", sentiment=ratio.cast(pl.Float64))

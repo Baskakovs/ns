@@ -107,7 +107,7 @@ class TestALevelBelongsToOneLine:
     def test_a_level_is_relabelled_to_its_company(self):
         """The store files snippets by yukka_id, so that is what a price panel has to join on."""
         panel = keyed(levels(("BMWG.DE", date(2025, 1, 6), 80.0)), UNIVERSE)
-        assert panel.to_dicts() == [{"entity": "company:bmw", "date": date(2025, 1, 6), "close_price": 80.0}]
+        assert panel.to_dicts() == [{"entity": "company:bmw", "day": date(2025, 1, 6), "close_price": 80.0}]
 
     def test_the_columns_are_the_documented_ones(self):
         """A caller joining this to the counts needs the shape to be fixed."""
@@ -123,7 +123,7 @@ class TestALevelBelongsToOneLine:
             UNIVERSE,
         )
         assert panel.to_dicts() == [
-            {"entity": "company:industrivarden", "date": date(2025, 1, 6), "close_price": 30.1}
+            {"entity": "company:industrivarden", "day": date(2025, 1, 6), "close_price": 30.1}
         ], "the C line is the one the company trades on now"
 
     def test_one_row_per_company_and_day(self):
@@ -136,7 +136,7 @@ class TestALevelBelongsToOneLine:
             ),
             UNIVERSE,
         )
-        assert panel.height == panel.select("entity", "date").n_unique() == 2
+        assert panel.height == panel.select("entity", "day").n_unique() == 2
 
     def test_a_ric_the_universe_does_not_name_is_left_out(self):
         """It belongs to no company this panel is about."""
@@ -151,8 +151,8 @@ class TestALevelBelongsToOneLine:
             key="ric",
         )
         assert panel.to_dicts() == [
-            {"ric": "BMWG.DE", "date": date(2024, 8, 2), "close_price": 81.0},
-            {"ric": "BMWG.L", "date": date(2024, 8, 1), "close_price": 80.0},
+            {"ric": "BMWG.DE", "day": date(2024, 8, 2), "close_price": 81.0},
+            {"ric": "BMWG.L", "day": date(2024, 8, 1), "close_price": 80.0},
         ]
 
     def test_a_ric_naming_two_companies_is_refused(self):
@@ -191,15 +191,15 @@ def test_reads_a_week_of_the_real_feed():
 
     for kind, panel in panels.items():
         assert panel.columns == list(COLUMNS), kind
-        assert panel.schema["date"] == pl.Date, kind
-        assert panel.height == panel.select("entity", "date").n_unique(), f"{kind} is not uniquely keyed"
+        assert panel.schema["day"] == pl.Date, kind
+        assert panel.height == panel.select("entity", "day").n_unique(), f"{kind} is not uniquely keyed"
         assert panel.get_column("entity").n_unique() > 500, kind
 
     matched = (
         panels["net"]
         .rename({"close_price": "net"})
-        .join(panels["gross"].rename({"close_price": "gross"}), on=["entity", "date"])
-        .sort("date")
+        .join(panels["gross"].rename({"close_price": "gross"}), on=["entity", "day"])
+        .sort("day")
         .group_by("entity")
         .agg(
             net=(pl.col("net").last() / pl.col("net").first() - 1),

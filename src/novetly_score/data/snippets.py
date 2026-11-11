@@ -1032,7 +1032,7 @@ class Universe:
                 counts are — or ``None`` for the ``yukka_id``.
 
         Returns:
-            ``entity`` (or *key*), ``date``, ``close_price``, sorted by both. Days a name had no
+            ``entity`` (or *key*), ``day``, ``close_price``, sorted by both. Days a name had no
             valid close are absent rather than forward-filled.
 
         Raises:
