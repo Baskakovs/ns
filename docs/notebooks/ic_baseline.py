@@ -131,44 +131,47 @@ def _(
     # The config is required to construct an engine; no part of it touches the IC path.
     cfg = BasanosConfig(vola=20, corr=60, clip=3.0, shrink=0.5, aum=1_000_000)
 
-    def curves(signal):
-        """Mean rank IC of one signal at every horizon, cumulative and marginal.
+    # One lagged price frame per horizon, built once and shared by every signal: row t holds the
+    # close h-1 days on, so rank_ic(h=1) over it reads the single day t+h-1 -> t+h.
+    shifted = {
+        h: (prices if h == 1 else prices.with_columns([pl.col(a).shift(-(h - 1)) for a in assets])) for h in horizons
+    }
 
-        *Cumulative* pairs the signal with the whole ``h``-day return; *marginal* pairs it with
-        the single day ``h`` ahead, holding the noise constant across horizons. A rising
-        cumulative curve beside a flat marginal one is accumulation, not information.
+    def curve(signal):
+        """Mean rank IC of one signal against the single day *h* ahead, at every horizon.
+
+        Every point uses a one-day return, so the noise is the same across the axis and the
+        slope is readable. Pairing the signal with the whole ``h``-day return instead would
+        make any persistent signal look stronger at longer horizons whether or not it carries
+        information, because drift accumulates like ``h`` while noise grows like ``sqrt(h)``.
         """
         mu = wide(panel.filter(pl.col(signal) >= 0), signal, days, assets)
-        engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
         rows = []
         for h in horizons:
-            lagged = prices.with_columns([pl.col(a).shift(-(h - 1)) for a in assets]) if h > 1 else prices
-            marginal = BasanosEngine(prices=lagged, mu=mu, cfg=cfg).rank_ic(h=1)
-            for kind, series in (("cumulative", engine.rank_ic(h=h)), ("marginal", marginal)):
-                values = series.get_column("rank_ic").to_numpy()
-                values = values[np.isfinite(values)]
-                rows.append(
-                    {
-                        "signal": signal,
-                        "h": h,
-                        "kind": kind,
-                        "ic": float(values.mean()),
-                        "t": float(values.mean() / values.std(ddof=1) * np.sqrt(len(values))),
-                    }
-                )
+            series = BasanosEngine(prices=shifted[h], mu=mu, cfg=cfg).rank_ic(h=1)
+            values = series.get_column("rank_ic").to_numpy()
+            values = values[np.isfinite(values)]
+            rows.append(
+                {
+                    "signal": signal,
+                    "h": h,
+                    "ic": float(values.mean()),
+                    "t": float(values.mean() / values.std(ddof=1) * np.sqrt(len(values))),
+                }
+            )
         return rows
 
-    table = pl.DataFrame([row for signal in signals for row in curves(signal)])
+    table = pl.DataFrame([row for signal in signals for row in curve(signal)])
     return (table,)
 
 
 @app.cell
 def _(go, pl, signals):
-    def plot(table, kind, title):
+    def plot(table, title):
         """One line per signal across the horizons, with a zero reference."""
         figure = go.Figure()
         for signal in signals:
-            part = table.filter((pl.col("kind") == kind) & (pl.col("signal") == signal)).sort("h")
+            part = table.filter(pl.col("signal") == signal).sort("h")
             figure.add_scatter(
                 x=part.get_column("h").to_list(),
                 y=part.get_column("ic").to_list(),
@@ -194,30 +197,12 @@ def _(go, pl, signals):
 @app.cell
 def _(mo):
     mo.md("""
-    ## Cumulative: signal at *t* against the whole *t → t+h* return
+    ## Rank IC against the single day *t+h-1 → t+h*
 
-    All three counts climb steadily with the horizon while `sentiment` falls away from zero. Read
-    with care — the `h`-day return is a sum of `h` daily returns, so a persistent signal looks
-    stronger at longer horizons whether or not it carries information.
-    """)
-    return
-
-
-@app.cell
-def _(plot, table):
-    plot(table, "cumulative", "Cumulative rank IC, PIT STOXX 600")
-    return
-
-
-@app.cell
-def _(mo):
-    mo.md("""
-    ## Marginal: signal at *t* against the single day *t+h-1 → t+h*
-
-    Same signal, same horizons, but each point uses a one-day return, so the noise is identical
-    across the axis and the slope means something. These curves are flat, which says the signals
-    predict day 22 about as well as day 1 — the mark of a standing cross-sectional tilt rather
-    than news being priced in. Roughly one standard error is 0.005, so none of the wiggles are
+    Each point pairs the signal at *t* with a one-day return, so the noise is identical across
+    the axis and the slope of the curve is readable. The curves are flat: the signals predict
+    day 22 about as well as day 1, which is the mark of a standing cross-sectional tilt rather
+    than news being priced in. One standard error is roughly 0.005, so none of the wiggles are
     interpretable.
     """)
     return
@@ -225,15 +210,18 @@ def _(mo):
 
 @app.cell
 def _(plot, table):
-    plot(table, "marginal", "Marginal (one-day) rank IC, PIT STOXX 600")
+    plot(table, "Marginal (one-day) rank IC, PIT STOXX 600")
     return
 
 
 @app.cell
 def _(pl, signals, table):
-    table.pivot(on="signal", index=["kind", "h"], values="ic").sort("kind", "h").with_columns(
-        pl.col(list(signals)).round(5)
-    )
+    table.pivot(on="signal", index="h", values="ic").sort("h").with_columns(pl.col(list(signals)).round(5))
+    return
+
+
+@app.cell
+def _():
     return
 
 
