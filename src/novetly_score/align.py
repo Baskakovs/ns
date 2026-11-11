@@ -31,7 +31,7 @@ silent rather than loud:
 from __future__ import annotations
 
 from datetime import date
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import polars as pl
 
@@ -76,7 +76,9 @@ def entry_day(counts: pl.DataFrame, days: pl.Series, columns: Sequence[str] = CO
         ``ric``, ``day`` and *columns*, where ``day`` is now the trading day the news prices into
         rather than the day it was published.
     """
-    calendar = pl.DataFrame({"published": pl.date_range(days.min(), days.max(), eager=True)})
+    # Series.min()/max() are typed as a union of every dtype polars can hold; the grid is dates
+    first, last = cast("date", days.min()), cast("date", days.max())
+    calendar = pl.DataFrame({"published": pl.date_range(first, last, eager=True)})
     mapping = (
         calendar.with_columns(after=pl.col("published").dt.offset_by("1d"))
         .sort("after")
@@ -189,7 +191,9 @@ def tradable(prices: pl.DataFrame, rics: Iterable[str], *, max_null: float = 0.5
     for ric in rics:
         column = prices.get_column(ric)
         quoted = column.drop_nulls()
-        if quoted.len() < 3 or quoted.min() <= 0 or column.null_count() / prices.height > max_null:
+        if quoted.len() < 3 or column.null_count() / prices.height > max_null:
+            continue
+        if cast("float", quoted.min()) <= 0:  # a level, whatever the union says
             continue
         steps = quoted.diff().drop_nulls()
         if (steps >= 0).all() or (steps <= 0).all():

@@ -67,6 +67,7 @@ def fake_boto(monkeypatch):
     """Install a FakeClient in place of boto3's, so the check meets a scripted answer."""
 
     def install(answer):
+        """Put the fake module in sys.modules for the duration of the test."""
         client = FakeClient(answer)
         monkeypatch.setattr(boto3, "client", lambda *_args, **_kwargs: client)
         return client

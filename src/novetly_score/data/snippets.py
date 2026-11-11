@@ -46,7 +46,7 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from novetly_score.data.duck import BUCKET, OpenDuck
 
@@ -185,8 +185,9 @@ def entities(assets: Assets) -> tuple[str, ...]:
         interval, and repeating a file in a read would double its rows.
     """
     if hasattr(assets, "columns") and hasattr(assets, "get_column"):  # a polars frame
-        assets = assets.get_column("yukka_id").drop_nulls().to_list()
-    items: Iterable[Any] = assets if _is_iterable(assets) else [assets]
+        frame = cast("pl.DataFrame", assets)
+        assets = frame.get_column("yukka_id").drop_nulls().to_list()
+    items: Iterable[Any] = cast("Iterable[Any]", assets) if _is_iterable(assets) else [assets]
     return tuple(dict.fromkeys(entity(item) for item in items))
 
 
@@ -817,7 +818,7 @@ class Counts:
             panel = pl.DataFrame(self.relation(connection))
         if self._key is None:
             return panel
-        return as_of(panel, self._universe, self._key, on="day")
+        return as_of(panel, cast("pl.DataFrame", self._universe), self._key, on="day")
 
     def relation(self, connection: DuckDBPyConnection | None = None) -> DuckDBPyRelation:
         """The aggregation as a DuckDB relation, for a query that goes further than a panel.
@@ -845,7 +846,7 @@ class Counts:
             NoSnippetsError: If the narrowing left no file to read.
             RuntimeError: If no connection was passed and none is held.
         """
-        return self._snippets.relation(connection).query("snippets", _COUNTS_SQL)
+        return cast("DuckDBPyRelation", self._snippets.relation(connection).query("snippets", _COUNTS_SQL))
 
     def __repr__(self) -> str:
         """Describe the aggregation without running it.
@@ -922,7 +923,9 @@ class Universe:
         """
         self._names = entities(assets)
         self._connection = connection
-        self._frame = assets if hasattr(assets, "columns") and hasattr(assets, "get_column") else None
+        self._frame: pl.DataFrame | None = (
+            cast("pl.DataFrame", assets) if hasattr(assets, "columns") and hasattr(assets, "get_column") else None
+        )
         if not self._names:
             msg = "no assets given: pass a YUKKA id, an Asset, an IndexConstituent, or a list of them"
             raise ValueError(msg)
@@ -987,6 +990,9 @@ class Universe:
             panel = panel.filter(pl.col("day") <= last)
         if key is None:
             return panel
+        if self._frame is None:
+            msg = f"counts(key={key!r}) needs the universe frame: pass it to data() instead of plain ids"
+            raise ValueError(msg)
         return as_of(panel, self._frame, key, on="day")
 
     def derive_counts(
@@ -1046,8 +1052,8 @@ class Universe:
         # An end left as None stays None, which is the manifest's "no bound on that side"; a day
         # moves its month one out, because the files are not UTC-day aligned.
         read = self.snippets._with(
-            first=first if first_day is None else _shift_month(first, -1),
-            last=last if last_day is None else _shift_month(last, 1),
+            first=first if first_day is None else _shift_month(cast("str", first), -1),
+            last=last if last_day is None else _shift_month(cast("str", last), 1),
         )
         counts = Counts(read, universe=self._frame)
         frame = (counts if key is None else counts.by(key)).frame

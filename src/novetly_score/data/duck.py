@@ -130,7 +130,7 @@ class OpenDuck:
         if connection is not None:
             connection.close()
 
-    def _settings(self, endpoint: str, access_key: str, secret: str) -> dict[str, object]:
+    def _settings(self, endpoint: str, access_key: str, secret: str) -> dict[str, str | bool | int | float | list[str]]:
         """Translate an endpoint URL and a key pair into DuckDB's S3 settings.
 
         DuckDB wants the host without its scheme and a separate flag for TLS, so the one URL in
@@ -147,7 +147,7 @@ class OpenDuck:
             A config dict for ``duckdb.connect``.
         """
         scheme, _, host = endpoint.partition("://")
-        settings: dict[str, object] = {
+        settings: dict[str, str | bool | int | float | list[str]] = {
             "s3_endpoint": host or scheme,  # no scheme given: the whole string is the host
             "s3_access_key_id": access_key,
             "s3_secret_access_key": secret,

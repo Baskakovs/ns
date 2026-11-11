@@ -68,21 +68,28 @@ class TestReadPanel:
         """Stand in for OpenClient with an in-memory key-value store."""
 
         class NoSuchKey(Exception):  # noqa: N818 — mirrors boto3's own exception name
-            pass
+            """What boto3 raises for a key the bucket does not hold."""
 
         class Client:
+            """The two calls panels.py makes on an S3 client."""
+
             exceptions = type("Exceptions", (), {"NoSuchKey": NoSuchKey})()
 
             def get_object(self, Bucket, Key):  # noqa: N803 — boto3's own casing
+                """Return the stored bytes for *Key*, or raise as boto3 would."""
                 if Key not in objects:
                     raise NoSuchKey(Key)
                 return {"Body": io.BytesIO(objects[Key])}
 
         class Opened:
+            """Stand in for the OpenClient context manager."""
+
             def __enter__(self):
+                """Hand over the fake client."""
                 return Client()
 
             def __exit__(self, *_exc):
+                """Nothing to release."""
                 return None
 
         monkeypatch.setattr("novetly_score.data.panels.OpenClient", lambda *a, **k: Opened())
