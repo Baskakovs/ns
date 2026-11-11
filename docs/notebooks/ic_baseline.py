@@ -1,3 +1,27 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#     "basanos>=0.7.3",
+#     "marimo>=0.19",
+#     "novetly-score",
+#     "numpy>=2",
+#     "plotly>=6",
+#     "polars>=2.1",
+#     "python-dotenv>=1.0",
+#     "yukka>=3.0.0",
+# ]
+#
+# # The BOOK job exports these with `marimo export html --sandbox`, which builds an isolated
+# # environment from this header alone -- a notebook-group dependency is invisible to it. The
+# # project is a path dependency so polars, duckdb, boto3, yukka and python-dotenv come with it.
+# [tool.uv.sources]
+# novetly-score = { path = "../..", editable = false }
+#
+# # basanos 0.7.3 imports cvx.linalg.ewm_cov, dropped in cvx-linalg 0.9, but pins only >=0.6.1.
+# [tool.uv]
+# constraint-dependencies = ["cvx-linalg<0.9"]
+# ///
+
 import marimo
 
 __generated_with = "0.25.2"
@@ -6,26 +30,35 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _():
+    import os
+
     import marimo as mo
     import numpy as np
     import plotly.graph_objects as go
     import polars as pl
     from basanos.math import BasanosConfig, BasanosEngine
+    from dotenv import load_dotenv
     from yukka.data import Index
 
     from novetly_score.align import entry_day, pit_members, tradable, trading_days, wide
     from novetly_score.data import data
+    from novetly_score.data.s3 import ACCESS_KEY_VAR, ENDPOINT_VAR, SECRET_VAR
     from novetly_score.panel import sentiment
 
     return (
+        ACCESS_KEY_VAR,
         BasanosConfig,
         BasanosEngine,
+        ENDPOINT_VAR,
         Index,
+        SECRET_VAR,
         data,
         entry_day,
         go,
+        load_dotenv,
         mo,
         np,
+        os,
         pit_members,
         pl,
         sentiment,
@@ -65,7 +98,16 @@ def _():
 
 
 @app.cell
-def _(Index, data):
+def _(ACCESS_KEY_VAR, ENDPOINT_VAR, Index, SECRET_VAR, data, load_dotenv, mo, os):
+    # The MARIMO and BOOK jobs run this notebook with no credentials, so stop here with a note
+    # rather than fail: every cell below needs the store and a YUKKA token. .env is loaded the
+    # way the data layer loads it, so a local run with a .env is unaffected.
+    load_dotenv()
+    missing = [name for name in (ENDPOINT_VAR, ACCESS_KEY_VAR, SECRET_VAR, "YUKKA_TOKEN") if not os.environ.get(name)]
+    mo.stop(
+        bool(missing),
+        mo.md(f"**Not run.** Set `{'`, `'.join(missing)}` to read the store and the universe."),
+    )
     # One view of the store, both panels off it: same interface, same keys, same column names.
     store = data(Index.STOXX600.frame)
     membership = Index.STOXX600.membership_history
@@ -74,9 +116,9 @@ def _(Index, data):
 
 @app.cell
 def _(store):
-    # Materialised in the store: one 1.3 MB object, not the aggregation over 181M snippet rows
-    # that produced it. Rebuild with write_counts() when the store gains a month; read_counts()
-    # refuses a panel the store has outgrown.
+    # Read from the stored panel, not aggregated: one 1.3 MB object rather than 181M snippet
+    # rows. Rebuild with write_counts() when the store gains a month; a panel the store has
+    # outgrown is refused rather than served short.
     tone = store.counts(key="ric")
     return (tone,)
 

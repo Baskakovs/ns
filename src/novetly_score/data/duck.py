@@ -112,7 +112,16 @@ class OpenDuck:
         import duckdb  # deferred: loading the engine costs a fraction of a second
 
         endpoint, access_key, secret = _credentials(*self._given)
-        connection = duckdb.connect(config=self._settings(endpoint, access_key, secret))
+        settings = self._settings(endpoint, access_key, secret)
+        try:
+            connection = duckdb.connect(config=settings)
+        except duckdb.InvalidInputException:
+            # Setting s3_endpoint needs httpfs, which DuckDB autoloads by fetching it from its
+            # own CDN the first time. That fetch fails intermittently on CI runners, and the
+            # connection is refused outright. Install it deliberately, with retries, and try
+            # again -- the download is cached per user, so this is paid once and only on failure.
+            _install_httpfs()
+            connection = duckdb.connect(config=settings)
         if self._check:
             try:
                 _check(connection, self._bucket, endpoint)
@@ -171,6 +180,47 @@ class OpenDuck:
         if self._temp_directory is not None:
             settings["temp_directory"] = self._temp_directory
         return settings
+
+
+def _install_httpfs(attempts: int = 3, pause: float = 1.0) -> None:
+    """Fetch and load the ``httpfs`` extension, retrying a failed download.
+
+    DuckDB will not accept an ``s3_endpoint`` setting without this extension, and autoloads it
+    from its CDN the first time one is asked for. That download is the single flakiest thing in
+    this layer's CI -- it has refused a connection on Windows runners twice -- so it is worth
+    asking for deliberately rather than leaving to an autoload that gets one attempt.
+
+    Installing writes to DuckDB's own extension directory, so a later connection autoloads it
+    from local disk and touches no network. Credentials are not involved: this runs on a plain
+    in-memory connection, which is why the S3 settings can stay out of SQL entirely.
+
+    Args:
+        attempts: How many times to try the download before giving up.
+        pause: Seconds to wait between attempts.
+
+    Raises:
+        ConnectionFailedError: If every attempt failed, naming the last error.
+    """
+    import time
+
+    import duckdb
+
+    last: Exception | None = None
+    for attempt in range(attempts):
+        probe = duckdb.connect()
+        try:
+            probe.install_extension("httpfs")
+            probe.load_extension("httpfs")
+        except duckdb.Error as exc:
+            last = exc
+            if attempt + 1 < attempts:
+                time.sleep(pause)
+        else:
+            return
+        finally:
+            probe.close()
+    msg = f"could not install DuckDB's httpfs extension after {attempts} attempts: {last}"
+    raise ConnectionFailedError(msg)
 
 
 def _check(connection: DuckDBPyConnection, bucket: str, endpoint: str) -> None:

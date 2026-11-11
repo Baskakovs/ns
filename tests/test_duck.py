@@ -11,6 +11,10 @@ from novetly_score.data.s3 import ACCESS_KEY_VAR, ENDPOINT_VAR, SECRET_VAR
 
 ENDPOINT = "https://yl-minio.example.com"
 
+#: What DuckDB says when an s3_endpoint is set without httpfs, and what a failed download says.
+NO_HTTPFS = 'To set the "s3_endpoint" setting, the httpfs extension needs to be loaded.'
+NO_DOWNLOAD = "could not download extension"
+
 
 @pytest.fixture
 def env(monkeypatch, tmp_path):
@@ -191,3 +195,86 @@ def test_opens_a_connection_on_the_real_endpoint():
         if "not set" in str(exc):
             pytest.skip(str(exc))
         raise
+
+
+class TestTheHttpfsExtensionIsInstalledDeliberately:
+    """DuckDB refuses an ``s3_endpoint`` without httpfs, and its autoload of it is flaky."""
+
+    def test_a_refused_connection_installs_the_extension_and_retries(self, env, monkeypatch):
+        """The failure CI showed twice on Windows: refused once, then connected."""
+        installed: list[str] = []
+        attempts: list[int] = []
+
+        class Probe:
+            """A plain connection, which is what the install runs on."""
+
+            def install_extension(self, name):
+                """Record the extension asked for."""
+                installed.append(name)
+
+            def load_extension(self, name):
+                """Loading is part of proving the install worked."""
+                installed.append(f"load:{name}")
+
+            def close(self):
+                """Nothing to release."""
+
+        def connect(**kwargs):
+            """Refuse the first configured connect, as a missing httpfs does."""
+            if "config" not in kwargs:
+                return Probe()
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise duckdb.InvalidInputException(NO_HTTPFS)
+            return FakeConnection(None)
+
+        monkeypatch.setattr(duckdb, "connect", connect)
+
+        with OpenDuck() as connection:
+            assert isinstance(connection, FakeConnection)
+
+        assert installed == ["httpfs", "load:httpfs"], "installed once, not per attempt"
+        assert len(attempts) == 2, "the configured connect is retried exactly once"
+
+    def test_a_download_that_never_works_says_so(self, env, monkeypatch):
+        """Three failed downloads is a connection failure naming the last error, not a retry loop."""
+
+        class Probe:
+            """A connection whose extension download always fails."""
+
+            def install_extension(self, _name):
+                """Fail the way a blocked CDN does."""
+                raise duckdb.IOException(NO_DOWNLOAD)
+
+            def close(self):
+                """Nothing to release."""
+
+        def connect(**kwargs):
+            """Refuse every configured connect; hand out a failing probe otherwise."""
+            if "config" not in kwargs:
+                return Probe()
+            raise duckdb.InvalidInputException(NO_HTTPFS)
+
+        monkeypatch.setattr(duckdb, "connect", connect)
+        monkeypatch.setattr("time.sleep", lambda _s: None)
+
+        with pytest.raises(ConnectionFailedError, match="httpfs extension after 3 attempts"):
+            OpenDuck().__enter__()
+
+    def test_a_healthy_connect_never_touches_the_extension(self, env, monkeypatch):
+        """No overhead on the happy path: the install only runs when the connect is refused."""
+        probes: list[object] = []
+
+        def connect(**kwargs):
+            """Succeed on the configured connect, and record any probe asked for."""
+            if "config" not in kwargs:
+                probes.append(object())
+                return None
+            return FakeConnection(None)
+
+        monkeypatch.setattr(duckdb, "connect", connect)
+
+        with OpenDuck():
+            pass
+
+        assert probes == [], "a working connect must not install anything"
