@@ -33,6 +33,7 @@ dependencies = [
     "duckdb>=2.0.0",
     # polars is imported directly (frames are what the layer returns), not only via yukka.
     # The duckdb -> polars handoff goes through the Arrow C stream, so no pyarrow is needed.
+    "openai>=3.46.0",
     "polars>=2.1",
     "python-dotenv>=1.0",
     # The universes the data layer is addressed by: Index.STOXX600 and Asset.

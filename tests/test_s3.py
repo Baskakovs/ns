@@ -106,7 +106,10 @@ class TestTheBlockIsTheLifetime:
             first.create_bucket(Bucket="experiments")
         with opener as second:
             assert second is not first
-            assert [b["Name"] for b in second.list_buckets()["Buckets"]] == ["experiments"]
+            # Membership, not equality: moto's backend is global to the process, so the other
+            # test modules' buckets are visible here too. What this proves is that the second
+            # block sees what the first one wrote.
+            assert "experiments" in [b["Name"] for b in second.list_buckets()["Buckets"]]
 
 
 class TestCredentials:
