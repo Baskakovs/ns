@@ -372,8 +372,12 @@ DEAD = "no route to host"
 class TestAStoreBlipDoesNotDiscardPaidWork:
     """The vectors are already paid for by the time upload runs."""
 
-    def test_a_transient_failure_is_retried(self, monkeypatch, layout, store):
+    def test_a_transient_failure_is_retried(self, monkeypatch, env, layout):
         """One blip must not kill a run, or the shard's tokens are spent for nothing."""
+        # `env` is what points the third attempt at the mock store. Depending on `store` alone
+        # leaves the S3 variables unset, so load_dotenv finds a developer's real .env and the
+        # retry writes to the production bucket -- which is exactly what happened once.
+        del env
         calls = []
         real = embed_module.OpenClient
 
