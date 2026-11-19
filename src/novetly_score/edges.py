@@ -511,6 +511,19 @@ def canonical(
     return frame, mapping, dropped
 
 
+def company_vectors(into_dir: str, company: str) -> str:
+    """Name one company's own staged vectors inside a partitioned stage directory.
+
+    Args:
+        into_dir: The directory :func:`stage` partitioned into.
+        company: The snippet directory name.
+
+    Returns:
+        A glob matching that company's partition.
+    """
+    return f"{into_dir}/company_id={company}/*.parquet"
+
+
 def stage(
     companies: Sequence[str],
     into: str,
@@ -518,23 +531,33 @@ def stage(
     *,
     first: str | None = None,
     last: str | None = None,
+    partitioned: bool = False,
 ) -> dict[str, int]:
-    """Copy just the vectors the named companies need into one local parquet, in a single pass.
+    """Copy just the vectors the named companies need onto local disk, in a single pass.
 
     This exists because of a measurement. A company's canonical texts are about 2% of the store,
     scattered uniformly across all 256 shards by their MD5, so nothing can be pruned by row-group
     statistics and the join reads essentially the whole 58 GB: **213 seconds for one month of one
-    company**. Paid per company that is 37 hours of lookup before any distance is computed. Paid
-    once for every company in the run, it is 213 seconds total.
+    company** on a laptop, 359 seconds for two whole companies on a well-connected VM. Paid per
+    company that is tens of hours of lookup before any distance is computed. Paid once for every
+    company in the run, it is minutes.
 
-    Run this before :func:`build` and pass the result as its *vectors*.
+    **Partition whenever the run covers more than a handful of companies.** One flat file is fine
+    for two -- it came to 1.95 GB -- but :func:`build` scans whatever it is handed *once per
+    company*, and the file for all 627 is the whole store. 627 scans of 58 GB is tens of hours of
+    pure I/O. ``partitioned=True`` writes one directory per company in the same single pass, so
+    each build reads only its own gigabyte.
+
+    Run this before :func:`build` and pass the result as its *vectors*, or the directory as
+    *vectors_dir* to :func:`sweep`.
 
     Args:
         companies: Snippet directory names the run will cover.
-        into: Local parquet path to write.
+        into: Local parquet path to write, or the directory to partition into.
         layout: The run's layout, naming the vectors' model and width.
         first: Earliest month, or ``None``.
         last: Latest month, or ``None``.
+        partitioned: Write one directory per company rather than a single file.
 
     Returns:
         ``{"companies": …, "texts": …, "vectors": …}``.
@@ -546,31 +569,42 @@ def stage(
 
     source = VectorLayout(model=layout.model, dimensions=layout.dimensions).glob("vectors")
     with OpenDuck(memory_limit="8GB") as con:
-        paths: list[str] = []
+        con.sql("CREATE OR REPLACE TABLE wanted (company_id VARCHAR, snippet_id VARCHAR)").fetchall()
+        files = 0
         for company in companies:
-            paths.extend(file_list(con, company, first, last))
-        print(f"staging vectors for {len(companies)} companies from {len(paths)} snippet files", flush=True)
-        con.sql(
-            """
-            CREATE OR REPLACE TABLE wanted AS
-            SELECT DISTINCT md5(snippet) AS snippet_id FROM read_parquet($paths)
-            WHERE snippet IS NOT NULL AND length(snippet) > 0
-            """,
-            params={"paths": paths},
-        ).fetchall()
-        (texts,) = con.sql("SELECT count(*) FROM wanted").fetchall()[0]
-        started = time.monotonic()
-        try:
+            paths = file_list(con, company, first, last)
+            files += len(paths)
+            # Tagged per company, because the partition needs to know which company each text
+            # belongs to -- and a text shared by two companies belongs to both.
             con.sql(
-                "COPY (SELECT v.snippet_id, v.embedding FROM read_parquet($vectors) AS v "
-                "SEMI JOIN wanted AS w ON w.snippet_id = v.snippet_id) "
-                "TO $into (FORMAT parquet, COMPRESSION zstd)",
-                params={"vectors": source, "into": into},
+                """
+                INSERT INTO wanted
+                SELECT DISTINCT $company, md5(snippet) FROM read_parquet($paths)
+                WHERE snippet IS NOT NULL AND length(snippet) > 0
+                """,
+                params={"company": company, "paths": paths},
             ).fetchall()
+        print(f"staging vectors for {len(companies)} companies from {files} snippet files", flush=True)
+        (texts,) = con.sql("SELECT count(DISTINCT snippet_id) FROM wanted").fetchall()[0]
+        started = time.monotonic()
+        copy = (
+            "COPY (SELECT w.company_id, v.snippet_id, v.embedding FROM read_parquet($vectors) AS v "
+            "JOIN wanted AS w ON w.snippet_id = v.snippet_id) "
+            "TO $into (FORMAT parquet, COMPRESSION zstd, PARTITION_BY (company_id), OVERWRITE_OR_IGNORE)"
+            if partitioned
+            else "COPY (SELECT v.snippet_id, v.embedding FROM read_parquet($vectors) AS v "
+            "SEMI JOIN wanted AS w ON w.snippet_id = v.snippet_id) "
+            "TO $into (FORMAT parquet, COMPRESSION zstd)"
+        )
+        try:
+            con.sql(copy, params={"vectors": source, "into": into}).fetchall()
         except duckdb.Error as exc:
             msg = f"no vector could be read from {source!r}: {exc}"
             raise EdgeRunError(msg) from exc
-        (written,) = con.sql("SELECT count(*) FROM read_parquet($into)", params={"into": into}).fetchall()[0]
+        read_back = f"{into}/*/*.parquet" if partitioned else into
+        (written,) = con.sql(
+            "SELECT count(DISTINCT snippet_id) FROM read_parquet($into)", params={"into": read_back}
+        ).fetchall()[0]
     print(f"{texts:,} texts wanted, {written:,} vectors staged in {time.monotonic() - started:,.0f}s", flush=True)
     if written != texts:
         msg = f"{texts - written:,} of {texts:,} texts have no vector; embed them before building edges"
@@ -850,6 +884,7 @@ def sweep(
     last: str | None = None,
     force: bool = False,
     vectors: str | None = None,
+    vectors_dir: str | None = None,
 ) -> dict[str, int]:
     """Build every company that is not already done.
 
@@ -861,6 +896,9 @@ def sweep(
         force: Rebuild companies that already have an ``edges`` object.
         vectors: Staged parquet from :func:`stage`, or ``None`` to read the store's own glob --
             which costs a full 58 GB scan per company and is almost never what you want.
+        vectors_dir: Directory from ``stage(..., partitioned=True)``. Each company then reads only
+            its own partition, which is the difference between one scan of a gigabyte and one of
+            the whole store. Takes precedence over *vectors*.
 
     Returns:
         ``{"companies": …, "skipped": …, "edges": …, "bytes": …}``.
@@ -871,7 +909,8 @@ def sweep(
     totals = {"companies": 0, "skipped": len(companies) - len(pending), "edges": 0, "bytes": 0}
     for position, company in enumerate(pending, start=1):
         started = time.monotonic()
-        counts = build(company, layout, first=first, last=last, vectors=vectors)
+        source = company_vectors(vectors_dir, company) if vectors_dir else vectors
+        counts = build(company, layout, first=first, last=last, vectors=source)
         totals["companies"] += 1
         totals["edges"] += counts["edges"]
         totals["bytes"] += counts["bytes"]
@@ -980,13 +1019,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     keep = stages.add_parser("stage", help="copy the vectors these companies need to one local parquet")
     keep.add_argument("--entities", help="comma-separated company names")
     keep.add_argument("--months", help="FIRST:LAST, e.g. 2025-01:2025-03 (default: every month)")
-    keep.add_argument("--into", required=True, help="local parquet path to write")
+    keep.add_argument("--into", required=True, help="local parquet path, or directory if partitioned")
+    keep.add_argument(
+        "--partitioned",
+        action="store_true",
+        help="write one directory per company; use this for more than a handful of companies",
+    )
 
     run = stages.add_parser("build", help="write the three tables for each company")
     run.add_argument("--entities", help="comma-separated company names")
     run.add_argument("--months", help="FIRST:LAST, e.g. 2025-01:2025-03 (default: every month)")
     run.add_argument("--force", action="store_true", help="rebuild companies already done")
     run.add_argument("--vectors", default=None, help="staged parquet from the stage command (strongly advised)")
+    run.add_argument("--vectors-dir", default=None, help="directory from `stage --partitioned`, read per company")
 
     mark = stages.add_parser("benchmark", help="measure throughput and peak memory, writing nothing")
     mark.add_argument("--entities", help="comma-separated company names")
@@ -999,10 +1044,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         companies = _companies(args.entities)
         if args.stage == "stage":
             first, last = _months(args.months)
-            stage(companies, args.into, layout, first=first, last=last)
+            stage(companies, args.into, layout, first=first, last=last, partitioned=args.partitioned)
         elif args.stage == "build":
             first, last = _months(args.months)
-            sweep(companies, layout, first=first, last=last, force=args.force, vectors=args.vectors)
+            sweep(
+                companies,
+                layout,
+                first=first,
+                last=last,
+                force=args.force,
+                vectors=args.vectors,
+                vectors_dir=args.vectors_dir,
+            )
         else:
             benchmark(companies, layout, chunk=args.chunk, vectors=args.vectors)
     except EdgeRunError as exc:

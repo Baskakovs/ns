@@ -27,10 +27,12 @@ from novetly_score.edges import (
     _months,
     _split,
     build,
+    company_vectors,
     device,
     existing,
     main,
     peak_memory,
+    stage,
     sweep,
     trading_date_sql,
 )
@@ -194,9 +196,10 @@ def built(env, layout):
     del env
     build(COMPANY, layout)
     frames = []
-    for stage in ("snippet_meta", "snippet_map", "edges"):
+    # Named `table` rather than `stage`, which would shadow the imported stage() function.
+    for table in ("snippet_meta", "snippet_map", "edges"):
         with OpenClient() as s3:
-            body = s3.get_object(Bucket=layout.bucket, Key=layout.key(stage, COMPANY))["Body"].read()
+            body = s3.get_object(Bucket=layout.bucket, Key=layout.key(table, COMPANY))["Body"].read()
         import io
 
         frames.append(pl.read_parquet(io.BytesIO(body)))
@@ -577,3 +580,38 @@ class TestTheLayoutAddresses:
     def test_a_url_names_one(self, layout):
         """And this is how one company is read back, which the tests above rely on."""
         assert layout.url("edges", COMPANY).endswith(f"/edges/{COMPANY}.parquet")
+
+
+class TestPartitionedStaging:
+    """One vectors file per company, because build scans whatever it is handed once per company."""
+
+    def test_a_partition_is_named_per_company(self):
+        """The glob must match DuckDB's own PARTITION_BY layout or every build reads nothing."""
+        assert company_vectors("/data/vec", "airbus") == "/data/vec/company_id=airbus/*.parquet"
+
+    def test_staging_partitioned_writes_a_directory_per_company(self, env, layout, tmp_path):
+        """A flat file for 627 companies is 58 GB scanned 627 times; this is the fix."""
+        del env
+        into = tmp_path / "vec"
+        counts = stage([COMPANY], str(into), layout, partitioned=True)
+        assert counts["texts"] == len(TEXTS)
+        assert (into / f"company_id={COMPANY}").is_dir()
+        assert pl.read_parquet(company_vectors(str(into), COMPANY)).height == len(TEXTS)
+
+    def test_a_build_reads_only_its_own_partition(self, env, layout, tmp_path):
+        """The whole point: the company's build must succeed against its partition alone."""
+        del env
+        into = tmp_path / "vec"
+        stage([COMPANY], str(into), layout, partitioned=True)
+        counts = build(COMPANY, layout, vectors=company_vectors(str(into), COMPANY))
+        assert counts["edges"] > 0
+        assert counts["canonical"] > 0
+
+    def test_a_sweep_routes_each_company_to_its_partition(self, env, layout, tmp_path):
+        """Sweep must derive the per-company path itself, or the flag is useless in practice."""
+        del env
+        into = tmp_path / "vec"
+        stage([COMPANY], str(into), layout, partitioned=True)
+        totals = sweep([COMPANY], layout, vectors_dir=str(into), force=True)
+        assert totals["companies"] == 1
+        assert totals["edges"] > 0
