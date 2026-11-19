@@ -78,6 +78,12 @@ TOP_K: Final = 50
 #: width the worst measured day peaks near 0.5 GB, which fits any device.
 CHUNK: Final = 16_384
 
+#: DuckDB buffer pool, when a caller names none. Conservative enough for a laptop; a partitioned
+#: stage over hundreds of companies needs far more and should be told so -- it buffers an open
+#: writer per partition, and 8 GB over 627 of them is where a sweep dies with an out-of-memory
+#: error rather than spilling.
+MEMORY_LIMIT: Final = "8GB"
+
 #: Local hour at or after which an article belongs to the next trading day.
 CLOSE_HOUR: Final = 16
 
@@ -532,6 +538,8 @@ def stage(
     first: str | None = None,
     last: str | None = None,
     partitioned: bool = False,
+    memory_limit: str = MEMORY_LIMIT,
+    temp_directory: str | None = None,
 ) -> dict[str, int]:
     """Copy just the vectors the named companies need onto local disk, in a single pass.
 
@@ -558,6 +566,10 @@ def stage(
         first: Earliest month, or ``None``.
         last: Latest month, or ``None``.
         partitioned: Write one directory per company rather than a single file.
+        memory_limit: DuckDB buffer pool. Raise it for a partitioned run over many companies:
+            each open partition holds a write buffer, and the default is a laptop's figure.
+        temp_directory: Where DuckDB spills past *memory_limit*, so it slows down rather than
+            failing. Worth setting on any machine whose disk is larger than its memory.
 
     Returns:
         ``{"companies": …, "texts": …, "vectors": …}``.
@@ -568,7 +580,12 @@ def stage(
     import duckdb
 
     source = VectorLayout(model=layout.model, dimensions=layout.dimensions).glob("vectors")
-    with OpenDuck(memory_limit="8GB") as con:
+    with OpenDuck(memory_limit=memory_limit, temp_directory=temp_directory) as con:
+        if partitioned:
+            # The partitioned write holds a buffer per open partition. Insertion order is of no
+            # use to anything downstream -- build sorts what it reads -- and giving it up is what
+            # lets DuckDB stream the partitions rather than hold them.
+            con.sql("SET preserve_insertion_order = false").fetchall()
         con.sql("CREATE OR REPLACE TABLE wanted (company_id VARCHAR, snippet_id VARCHAR)").fetchall()
         files = 0
         for company in companies:
@@ -749,6 +766,7 @@ def build(
     calendar: Sequence[date] | None = None,
     chunk: int = CHUNK,
     write: bool = True,
+    memory_limit: str = MEMORY_LIMIT,
 ) -> dict[str, int]:
     """Build and write one company's three tables.
 
@@ -761,6 +779,7 @@ def build(
         calendar: Trading days to index over, or ``None`` for every weekday in range.
         chunk: Columns of the candidate side per matmul block.
         write: Whether to upload. ``False`` computes everything and keeps it, for a benchmark.
+        memory_limit: DuckDB buffer pool for the canonical aggregation.
 
     Returns:
         ``{"canonical": …, "raw": …, "edges": …, "dropped": …, "bytes": …}``.
@@ -772,7 +791,7 @@ def build(
 
     source = vectors or VectorLayout(model=layout.model, dimensions=layout.dimensions).glob("vectors")
     target = device()
-    with OpenDuck(memory_limit="8GB") as con:
+    with OpenDuck(memory_limit=memory_limit) as con:
         paths = file_list(con, company, first, last)
         meta, mapping, dropped = canonical(con, company, paths, lookback=layout.lookback, calendar=calendar)
         embeddings = _tensor(con, source, layout.dimensions, target)
@@ -885,6 +904,7 @@ def sweep(
     force: bool = False,
     vectors: str | None = None,
     vectors_dir: str | None = None,
+    memory_limit: str = MEMORY_LIMIT,
 ) -> dict[str, int]:
     """Build every company that is not already done.
 
@@ -899,6 +919,7 @@ def sweep(
         vectors_dir: Directory from ``stage(..., partitioned=True)``. Each company then reads only
             its own partition, which is the difference between one scan of a gigabyte and one of
             the whole store. Takes precedence over *vectors*.
+        memory_limit: DuckDB buffer pool for each company's canonical aggregation.
 
     Returns:
         ``{"companies": …, "skipped": …, "edges": …, "bytes": …}``.
@@ -910,7 +931,7 @@ def sweep(
     for position, company in enumerate(pending, start=1):
         started = time.monotonic()
         source = company_vectors(vectors_dir, company) if vectors_dir else vectors
-        counts = build(company, layout, first=first, last=last, vectors=source)
+        counts = build(company, layout, first=first, last=last, vectors=source, memory_limit=memory_limit)
         totals["companies"] += 1
         totals["edges"] += counts["edges"]
         totals["bytes"] += counts["bytes"]
@@ -925,7 +946,12 @@ def sweep(
 
 
 def benchmark(
-    companies: Sequence[str], layout: Layout, *, chunk: int = CHUNK, vectors: str | None = None
+    companies: Sequence[str],
+    layout: Layout,
+    *,
+    chunk: int = CHUNK,
+    vectors: str | None = None,
+    memory_limit: str = MEMORY_LIMIT,
 ) -> list[dict[str, float]]:
     """Measure throughput and peak memory without writing anything.
 
@@ -934,6 +960,7 @@ def benchmark(
         layout: The run's layout.
         chunk: Columns of the candidate side per matmul block.
         vectors: Staged parquet from :func:`stage`, or ``None`` for the store's own glob.
+        memory_limit: DuckDB buffer pool.
 
     Returns:
         One report per company.
@@ -943,7 +970,7 @@ def benchmark(
     reports: list[dict[str, float]] = []
     for company in companies:
         started = time.monotonic()
-        counts = build(company, layout, chunk=chunk, write=False, vectors=vectors)
+        counts = build(company, layout, chunk=chunk, write=False, vectors=vectors, memory_limit=memory_limit)
         elapsed = time.monotonic() - started
         report = {
             "seconds": elapsed,
@@ -1011,6 +1038,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(prog="novetly_score.edges", description=__doc__.splitlines()[0])
     parser.add_argument("--model", default=MODEL, help=f"embedding model the vectors are under (default {MODEL})")
+    parser.add_argument(
+        "--memory-limit",
+        default=MEMORY_LIMIT,
+        help=f"DuckDB buffer pool (default {MEMORY_LIMIT}); raise it on a large host",
+    )
+    parser.add_argument("--temp-directory", default=None, help="where DuckDB spills rather than failing")
     parser.add_argument("--top-k", type=int, default=TOP_K, help=f"sources per target (default {TOP_K})")
     parser.add_argument("--lookback", type=int, default=LOOKBACK, help=f"trading days (default {LOOKBACK})")
     parser.add_argument("--dimensions", type=int, default=DIMENSIONS, help=f"vector width (default {DIMENSIONS})")
@@ -1044,7 +1077,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         companies = _companies(args.entities)
         if args.stage == "stage":
             first, last = _months(args.months)
-            stage(companies, args.into, layout, first=first, last=last, partitioned=args.partitioned)
+            stage(
+                companies,
+                args.into,
+                layout,
+                first=first,
+                last=last,
+                partitioned=args.partitioned,
+                memory_limit=args.memory_limit,
+                temp_directory=args.temp_directory,
+            )
         elif args.stage == "build":
             first, last = _months(args.months)
             sweep(
@@ -1055,9 +1097,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 force=args.force,
                 vectors=args.vectors,
                 vectors_dir=args.vectors_dir,
+                memory_limit=args.memory_limit,
             )
         else:
-            benchmark(companies, layout, chunk=args.chunk, vectors=args.vectors)
+            benchmark(companies, layout, chunk=args.chunk, vectors=args.vectors, memory_limit=args.memory_limit)
     except EdgeRunError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
