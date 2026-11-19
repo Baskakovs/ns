@@ -15,9 +15,12 @@ articles, sources and companies — 2.78 rows per distinct text in a 720k-row sa
 embedding rows instead of texts would pay for the same vector 2.8 times and store it 2.8 times.
 ``inventory`` deduplicates, and carries ``occurrences`` so the collapse is auditable.
 
-**The key is the text's MD5.** The snippet files have no id column, and a positional one would
-not survive a re-export. ``md5(snippet)`` is derivable from the data by anyone, in any engine,
-for ever, which is what a join key between two separately written datasets has to be.
+**The key is the text's MD5.** The files do carry a ``snippet_id`` UUID, but it is unique per
+*row*, so it cannot address a deduplicated text, and a positional id would not survive a
+re-export. ``md5(snippet)`` is derivable from the data by anyone, in any engine, for ever, which
+is what a join key between two separately written datasets has to be. Note the name collision:
+``snippet_id`` here is the MD5, not the upstream UUID, so a join between these vectors and a
+snippet file goes on ``md5(snippet)``.
 
 **Shards are the unit of work and of resume.** A snippet belongs to the shard named by the
 first :data:`SHARD_CHARS` characters of its id, which puts the same text in the same shard on
@@ -36,10 +39,10 @@ The output sits beside the inputs, keyed by model and width::
         vectors/shard-XX.parquet      snippet_id, embedding
         failed/shard-XX.parquet       snippet_id, error
 
-At 65M distinct snippets and 256 dimensions the vectors are about 67 GB, and the synchronous
-API costs roughly $55-85 at $0.02/MTok. OpenAI's Batch API is half that and fits a job of this
-shape; this script drives the synchronous API because it can be resumed and verified in minutes
-rather than in 24-hour cycles.
+The inventory in the store measures the job: 56,463,466 distinct texts out of 181,276,415 rows,
+~2.60B tokens, so ~$52 at $0.02/MTok and 58 GB of vectors at 256 dimensions. OpenAI's Batch API
+is half the price and fits a job of this shape; this script drives the synchronous API because
+it can be resumed and verified in minutes rather than in 24-hour cycles.
 """
 
 from __future__ import annotations
@@ -78,15 +81,20 @@ DIMENSIONS: Final = 256
 #: 1/256th of the run.
 SHARD_CHARS: Final = 2
 
-#: Inputs per request. The API accepts 2048; a smaller batch fails smaller and retries cheaper.
-BATCH_INPUTS: Final = 512
+#: Inputs per request. The API accepts 2048, and the snippets are short enough to use it: at a
+#: median 131 chars (~40 tokens) a full request is ~82k tokens, well inside BATCH_TOKENS. This
+#: buys round trips, not throughput — the run is paced by tokens at every tier, needing only
+#: 49-195 requests a minute against a 10,000 limit — but it carries the same 2.6B tokens in
+#: ~27,600 requests rather than ~110,000. The cost is that a failed batch retries 2048 inputs.
+BATCH_INPUTS: Final = 2_048
 
 #: Estimated tokens per request, kept under the API's 300k so an estimate that runs 20% light
 #: still fits.
 BATCH_TOKENS: Final = 250_000
 
 #: Characters kept per snippet. The limit is 8192 tokens; at worst one token per character this
-#: cannot exceed it. Only a handful of snippets reach it — the sample's longest was 9,966.
+#: cannot exceed it. 697 of the 56.46M inventoried texts (0.0012%) are truncated by it, the
+#: longest being 50,108 chars; the median text is 131.
 MAX_CHARS: Final = 8_000
 
 #: Characters per token, for estimating only. Latin text runs near 4, Chinese near 1.5; the
@@ -101,6 +109,11 @@ SHARD_ROWS_WARN: Final = 2_000_000
 
 #: Retries for one batch before it is written off to ``failed/``.
 MAX_ATTEMPTS: Final = 6
+
+#: Attempts to put one shard's object before the run gives up. The store is remote and reached
+#: by name, so a DNS or connection blip must not discard a shard whose vectors are already paid
+#: for: boto3's own 3 retries were exhausted by one such blip 3.5 hours into a run.
+UPLOAD_ATTEMPTS: Final = 5
 
 _SQL_FILE_LIST: Final = """
     SELECT entity, month FROM read_parquet($manifest)
@@ -418,6 +431,10 @@ def upload(frame: pl.DataFrame, key: str, bucket: str = BUCKET) -> int:
     The parquet is built locally and then put in one call, so a shard's object never exists
     half-written — which is what lets its presence stand for "this shard is done".
 
+    Retried :data:`UPLOAD_ATTEMPTS` times with backoff, because by this point the shard's
+    vectors have been paid for: letting a transient store failure propagate would discard them
+    and kill the run.
+
     Args:
         frame: The rows to write.
         key: The object key to write them to.
@@ -425,14 +442,28 @@ def upload(frame: pl.DataFrame, key: str, bucket: str = BUCKET) -> int:
 
     Returns:
         The bytes written.
+
+    Raises:
+        EmbeddingRunError: If every attempt to put the object failed.
     """
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "shard.parquet"
         frame.write_parquet(path, compression="zstd")
         size = path.stat().st_size
-        with OpenClient() as s3:
-            s3.upload_file(str(path), bucket, key)
-    return size
+        last: Exception | None = None
+        for attempt in range(UPLOAD_ATTEMPTS):
+            try:
+                with OpenClient() as s3:
+                    s3.upload_file(str(path), bucket, key)
+            except Exception as exc:  # noqa: BLE001 — botocore raises a family; the retry is the same
+                last = exc
+                if attempt == UPLOAD_ATTEMPTS - 1:
+                    break
+                time.sleep(min(2.0**attempt, 30.0))
+                continue
+            return size
+    msg = f"could not upload {key} after {UPLOAD_ATTEMPTS} attempts: {last}"
+    raise EmbeddingRunError(msg)
 
 
 def existing(stage: str, layout: Layout) -> set[str]:

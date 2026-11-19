@@ -32,9 +32,17 @@ dependencies = [
     "duckdb>=2.0.0",
     # polars is imported directly (frames are what the layer returns), not only via yukka.
     # The duckdb -> polars handoff goes through the Arrow C stream, so no pyarrow is needed.
+    # numpy is the handoff between a polars frame of embeddings and a torch tensor; edges.py
+    # needs it in src, where the notebook group is not reachable.
+    "numpy>=2",
     "openai>=3.46.0",
     "polars>=2.1",
     "python-dotenv>=1.0",
+    # The blocked cosine matmul and top-k selection in edges.py. Pinned to the CPU wheel on
+    # Linux below: the default wheel there drags in 15 nvidia-* packages plus cuda-toolkit,
+    # about 3 GB, and the 256-dim matmul is far too small for a GPU to be worth it -- measured
+    # at ~0.1 h on a T4 against ~0.7 h on 16 CPU cores for the whole corpus.
+    "torch>=2.5",
     # The universes the data layer is addressed by: Index.STOXX600 and Asset.
     "yukka>=3.0.0",
 ]
@@ -106,6 +114,20 @@ notebook = [
 # basanos.math` fails outright with ModuleNotFoundError. Pinned here as a constraint rather than
 # as a dependency because nothing in this repo imports cvx-linalg -- it is basanos's own
 # requirement, corrected. Drop this once basanos tracks the module's new home.
+# torch's default Linux wheel bundles CUDA -- 15 nvidia-* packages plus cuda-toolkit and
+# cuda-bindings, roughly 3 GB, which the CI matrix would download once per Python version on
+# every push. The matmul here is 256-dim and measured at ~0.1 h on a T4 against ~0.7 h on 16 CPU
+# cores for the entire corpus, so the CUDA build buys under an hour and costs 3 GB four times
+# over. Linux therefore takes the CPU wheel; macOS stays on the default one, which is
+# MPS-capable and carries no CUDA. A GPU host installs the CUDA build explicitly.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
 [tool.uv]
 constraint-dependencies = ["cvx-linalg<0.9"]
 # The MARIMO and BOOK workflows run each notebook with `uv run`, which installs the project

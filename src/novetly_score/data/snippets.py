@@ -79,7 +79,13 @@ MONTH: Final = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 #: Columns of a snippet file, in file order. ``entity`` holds the full ``yukka_id``, so a frame
 #: joins straight back onto a YUKKA universe; ``snippet`` is the text and dominates the bytes.
+#:
+#: Three grains live here and are easy to confuse. ``snippet_id`` is the upstream ``UUID`` and is
+#: unique per row. ``article_id`` is the parent article, about 2.3 rows each. And ``md5(snippet)``
+#: — a derivation, not a column — is the distinct-text key the embedding vectors are keyed by,
+#: about 2.6 rows each. A join onto those vectors goes on the MD5, never on ``snippet_id``.
 COLUMNS: Final = (
+    "snippet_id",
     "entity",
     "sentiment",
     "snippet",
