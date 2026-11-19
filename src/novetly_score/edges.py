@@ -242,11 +242,51 @@ def peak_memory(target: Any) -> int:  # a torch type, see device
 
     if target.type == "cuda":
         return int(torch.cuda.max_memory_allocated())
+    if sys.platform == "win32":  # pragma: no cover — only the Windows CI job takes this branch
+        return _windows_peak_working_set()
     import resource
 
     usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     # Linux reports kilobytes, macOS bytes.
     return int(usage if sys.platform == "darwin" else usage * 1024)
+
+
+def _windows_peak_working_set() -> int:  # pragma: no cover — Windows only
+    """Peak working set of this process, Windows' equivalent of a peak RSS.
+
+    ``resource`` is a Unix-only module, so the obvious implementation imports nothing on Windows
+    and the whole benchmark command dies with ``ModuleNotFoundError``. ``GetProcessMemoryInfo``
+    is the platform's own answer and reports a genuine high-water mark rather than a stub.
+
+    Returns:
+        Peak bytes of working set.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class Counters(ctypes.Structure):
+        """``PROCESS_MEMORY_COUNTERS``, in the order the API fills it."""
+
+        _fields_ = (
+            ("cb", wintypes.DWORD),
+            ("PageFaultCount", wintypes.DWORD),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        )
+
+    counters = Counters()
+    counters.cb = ctypes.sizeof(Counters)
+    handle = ctypes.windll.kernel32.GetCurrentProcess()  # type: ignore[attr-defined]  # ty: ignore
+    ctypes.windll.psapi.GetProcessMemoryInfo(  # type: ignore[attr-defined]  # ty: ignore
+        handle, ctypes.byref(counters), counters.cb
+    )
+    return int(counters.PeakWorkingSetSize)
 
 
 def file_list(con: DuckDBPyConnection, company: str, first: str | None, last: str | None) -> list[str]:
