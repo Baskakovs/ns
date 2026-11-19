@@ -258,8 +258,15 @@ def _windows_peak_working_set() -> int:  # pragma: no cover — Windows only
     and the whole benchmark command dies with ``ModuleNotFoundError``. ``GetProcessMemoryInfo``
     is the platform's own answer and reports a genuine high-water mark rather than a stub.
 
+    Both signatures are declared rather than left to ctypes' defaults, which matters: the default
+    return type is a C ``int``, so ``GetCurrentProcess``'s ``(HANDLE)-1`` pseudo-handle is
+    truncated to 32 bits on a 64-bit host, the call fails, and the figure comes back zero.
+
     Returns:
         Peak bytes of working set.
+
+    Raises:
+        OSError: If the call failed, so a zero is never passed off as a measurement.
     """
     import ctypes
     from ctypes import wintypes
@@ -280,12 +287,19 @@ def _windows_peak_working_set() -> int:  # pragma: no cover — Windows only
             ("PeakPagefileUsage", ctypes.c_size_t),
         )
 
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]  # ty: ignore
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)  # type: ignore[attr-defined]  # ty: ignore
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.GetCurrentProcess.argtypes = ()
+    psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+    psapi.GetProcessMemoryInfo.argtypes = (wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD)
+
     counters = Counters()
     counters.cb = ctypes.sizeof(Counters)
-    handle = ctypes.windll.kernel32.GetCurrentProcess()  # type: ignore[attr-defined]  # ty: ignore
-    ctypes.windll.psapi.GetProcessMemoryInfo(  # type: ignore[attr-defined]  # ty: ignore
-        handle, ctypes.byref(counters), counters.cb
-    )
+    if not psapi.GetProcessMemoryInfo(kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb):
+        code = ctypes.get_last_error()  # type: ignore[attr-defined]  # ty: ignore — Windows only
+        msg = f"GetProcessMemoryInfo failed with error {code}"
+        raise OSError(msg)
     return int(counters.PeakWorkingSetSize)
 
 
