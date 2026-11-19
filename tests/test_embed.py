@@ -14,10 +14,13 @@ import pytest
 from moto.server import ThreadedMotoServer
 
 from novetly_score.data import OpenClient
+from novetly_score.data import embed as embed_module
 from novetly_score.data.duck import BUCKET
 from novetly_score.data.embed import (
+    BATCH_INPUTS,
     MAX_ATTEMPTS,
     MAX_CHARS,
+    UPLOAD_ATTEMPTS,
     EmbeddingRunError,
     Layout,
     Limiter,
@@ -231,9 +234,10 @@ class TestBatching:
     """How a shard is cut into requests."""
 
     def test_a_batch_respects_the_input_count(self):
-        """Over 512 inputs must become more than one request."""
-        frame = pl.DataFrame({"snippet_id": [f"{i:032x}" for i in range(1300)], "snippet": ["x"] * 1300})
-        assert [part.height for part in batches(frame)] == [512, 512, 276]
+        """Over BATCH_INPUTS inputs must become more than one request."""
+        count = BATCH_INPUTS * 2 + 276
+        frame = pl.DataFrame({"snippet_id": [f"{i:032x}" for i in range(count)], "snippet": ["x"] * count})
+        assert [part.height for part in batches(frame)] == [BATCH_INPUTS, BATCH_INPUTS, 276]
 
     def test_a_batch_respects_the_token_estimate(self):
         """A few huge snippets must not ride in one request because they are few."""
@@ -358,6 +362,56 @@ class TestTheRunIsResumable:
         clear(layout)
         with pytest.raises(EmbeddingRunError, match="run the inventory command first"):
             embed(layout)
+
+
+#: Messages for the simulated store failures below, named so TRY003 stays satisfied.
+BLIP = "connection reset"
+DEAD = "no route to host"
+
+
+class TestAStoreBlipDoesNotDiscardPaidWork:
+    """The vectors are already paid for by the time upload runs."""
+
+    def test_a_transient_failure_is_retried(self, monkeypatch, layout, store):
+        """One blip must not kill a run, or the shard's tokens are spent for nothing."""
+        calls = []
+        real = embed_module.OpenClient
+
+        class Flaky:
+            """A store that refuses twice and then works, like a DNS blip resolving."""
+
+            def __enter__(self):
+                calls.append(1)
+                if len(calls) < 3:
+                    raise OSError(BLIP)
+                return real().__enter__()
+
+            def __exit__(self, *args):
+                return False
+
+        monkeypatch.setattr(embed_module, "OpenClient", Flaky)
+        monkeypatch.setattr(embed_module.time, "sleep", lambda _: None)
+        frame = pl.DataFrame({"snippet_id": ["a" * 32], "snippet": ["x"]})
+        embed_module.upload(frame, layout.key("inventory", "zz"), layout.bucket)
+        assert len(calls) == 3
+
+    def test_a_permanent_failure_names_the_key(self, monkeypatch):
+        """A run that cannot write must say so, not crash with a botocore traceback."""
+
+        class Dead:
+            """A store that never answers, so the run must give up and say which key it lost."""
+
+            def __enter__(self):
+                raise OSError(DEAD)
+
+            def __exit__(self, *args):
+                return False
+
+        monkeypatch.setattr(embed_module, "OpenClient", Dead)
+        monkeypatch.setattr(embed_module.time, "sleep", lambda _: None)
+        frame = pl.DataFrame({"snippet_id": ["a" * 32], "snippet": ["x"]})
+        with pytest.raises(EmbeddingRunError, match=f"after {UPLOAD_ATTEMPTS} attempts"):
+            embed_module.upload(frame, "k", "b")
 
 
 class TestFailuresAreRecorded:
